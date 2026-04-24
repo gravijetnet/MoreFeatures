@@ -1,0 +1,5 @@
+name: MoreFeatures
+version: 1.0.0
+main: net.gravijet.morefeatures.Main
+author: gravijet
+description: More features for example.invalid
