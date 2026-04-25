@@ -3,3 +3,14 @@ version: 1.0.0
 main: net.gravijet.morefeatures.Main
 author: gravijet
 description: More features for example.invalid
+
+commands:
+  bridgesync:
+    description: Forces an immediate Bridge sync
+    permission: bridge.sync
+    usage: /bridgesync
+
+permissions:
+  bridge.sync:
+    description: Allows running /bridgesync
+    default: op

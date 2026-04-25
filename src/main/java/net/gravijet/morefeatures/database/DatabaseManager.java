@@ -1,0 +1,299 @@
+package net.gravijet.morefeatures.database;
+
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import net.gravijet.morefeatures.config.BridgeConfig;
+
+import java.sql.*;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+public class DatabaseManager {
+
+    private static final ZoneId VIENNA = ZoneId.of("Europe/Vienna");
+
+    // -------------------------------------------------------------------------
+    // DDL
+    // -------------------------------------------------------------------------
+
+    private static final String CREATE_PLAYERS = ""
+            + "CREATE TABLE IF NOT EXISTS `players` ("
+            + "  `uuid`       VARCHAR(36)  NOT NULL,"
+            + "  `name`       VARCHAR(100) NOT NULL,"
+            + "  `rank`       VARCHAR(100),"
+            + "  `playtime`   INT,"
+            + "  `online`     BOOLEAN,"
+            + "  `first_seen` DATETIME,"
+            + "  `last_seen`  DATETIME,"
+            + "  PRIMARY KEY (`uuid`),"
+            + "  INDEX `idx_name` (`name`)"
+            + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+
+    // Single-row table: one column per stat, always id = 1
+    private static final String CREATE_NETWORK_STATS = ""
+            + "CREATE TABLE IF NOT EXISTS `network_stats` ("
+            + "  `id`             TINYINT NOT NULL,"
+            + "  `total_players`  BIGINT,"
+            + "  `total_bans`     BIGINT,"
+            + "  `total_mutes`    BIGINT,"
+            + "  `total_kicks`    BIGINT,"
+            + "  `peak_online`    BIGINT,"
+            + "  `current_online` BIGINT,"
+            + "  PRIMARY KEY (`id`)"
+            + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+
+    private static final String SEED_NETWORK_STATS =
+            "INSERT IGNORE INTO `network_stats` (`id`) VALUES (1);";
+
+    // Playtime is intentionally excluded — updated only by the per-player 5-minute timer
+    // first_seen uses LEAST+COALESCE so a Phoenix-derived earlier date can overwrite a stale one
+    private static final String UPSERT_PLAYER =
+            "INSERT INTO `players` (`uuid`, `name`, `rank`, `online`, `first_seen`, `last_seen`)"
+            + " VALUES (?, ?, ?, ?, ?, ?)"
+            + " ON DUPLICATE KEY UPDATE"
+            + "   `name`       = VALUES(`name`),"
+            + "   `rank`       = VALUES(`rank`),"
+            + "   `online`     = VALUES(`online`),"
+            + "   `first_seen` = LEAST(COALESCE(`first_seen`, VALUES(`first_seen`)), VALUES(`first_seen`)),"
+            + "   `last_seen`  = VALUES(`last_seen`);";
+
+    private static final String SET_PLAYER_ONLINE =
+            "UPDATE `players` SET `online` = ?, `last_seen` = ? WHERE `uuid` = ?;";
+
+    private static final String UPDATE_PLAYER_PLAYTIME =
+            "UPDATE `players` SET `playtime` = ?, `last_seen` = ? WHERE `uuid` = ?;";
+
+    private static final String UPDATE_PLAYER_RANK =
+            "UPDATE `players` SET `rank` = ? WHERE `uuid` = ?;";
+
+    private static final String PLAYER_EXISTS =
+            "SELECT 1 FROM `players` WHERE `uuid` = ? LIMIT 1;";
+
+    // total_players is read directly from PhoenixAPI on every call; peak_online only ever increases
+    private static final String UPDATE_NETWORK_ONLINE =
+            "UPDATE `network_stats` SET"
+            + "  `current_online` = ?,"
+            + "  `total_players`  = ?,"
+            + "  `peak_online`    = GREATEST(COALESCE(`peak_online`, 0), ?)"
+            + " WHERE `id` = 1;";
+
+    // -------------------------------------------------------------------------
+
+    private final HikariDataSource dataSource;
+    private final Logger logger;
+
+    public DatabaseManager(BridgeConfig config, Logger logger) {
+        this.logger = logger;
+
+        HikariConfig hikari = new HikariConfig();
+        hikari.setJdbcUrl(config.buildJdbcUrl());
+        hikari.setUsername(config.getUsername());
+        hikari.setPassword(config.getPassword());
+        hikari.setMaximumPoolSize(config.getPoolSize());
+        hikari.setMinimumIdle(2);
+        hikari.setConnectionTimeout(5_000L);
+        hikari.setIdleTimeout(300_000L);
+        hikari.setMaxLifetime(600_000L);
+        hikari.setPoolName("Bridge-Pool");
+
+        hikari.addDataSourceProperty("cachePrepStmts",          "true");
+        hikari.addDataSourceProperty("prepStmtCacheSize",        "250");
+        hikari.addDataSourceProperty("prepStmtCacheSqlLimit",    "2048");
+        hikari.addDataSourceProperty("useServerPrepStmts",       "true");
+        hikari.addDataSourceProperty("rewriteBatchedStatements", "true");
+
+        this.dataSource = new HikariDataSource(hikari);
+    }
+
+    // -------------------------------------------------------------------------
+    // Schema
+    // -------------------------------------------------------------------------
+
+    public void createTables() throws SQLException {
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement()) {
+
+            stmt.execute(CREATE_PLAYERS);
+            stmt.execute(CREATE_NETWORK_STATS);
+
+            try (PreparedStatement ps = conn.prepareStatement(SEED_NETWORK_STATS)) {
+                ps.executeUpdate();
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Player operations
+    // -------------------------------------------------------------------------
+
+    public void upsertPlayer(String uuid, String name, String rank,
+                             boolean online, Timestamp firstSeen) {
+        Timestamp now = now();
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(UPSERT_PLAYER)) {
+
+            ps.setString(1, uuid);
+            ps.setString(2, name);
+            ps.setString(3, rank);
+            ps.setBoolean(4, online);
+            ps.setTimestamp(5, firstSeen);
+            ps.setTimestamp(6, now);
+            ps.executeUpdate();
+
+        } catch (SQLException e) {
+            logger.log(Level.WARNING, "Failed to upsert player " + uuid, e);
+        }
+    }
+
+    public void setPlayerOnline(String uuid, boolean online) {
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(SET_PLAYER_ONLINE)) {
+
+            ps.setBoolean(1, online);
+            ps.setTimestamp(2, now());
+            ps.setString(3, uuid);
+            ps.executeUpdate();
+
+        } catch (SQLException e) {
+            logger.log(Level.WARNING, "Failed to set online status for " + uuid, e);
+        }
+    }
+
+    public void updatePlayerPlaytime(String uuid, int playtime) {
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(UPDATE_PLAYER_PLAYTIME)) {
+
+            ps.setInt(1, playtime);
+            ps.setTimestamp(2, now());
+            ps.setString(3, uuid);
+            ps.executeUpdate();
+
+        } catch (SQLException e) {
+            logger.log(Level.WARNING, "Failed to update playtime for " + uuid, e);
+        }
+    }
+
+    public void updatePlayerRank(String uuid, String rank) {
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(UPDATE_PLAYER_RANK)) {
+
+            ps.setString(1, rank);
+            ps.setString(2, uuid);
+            ps.executeUpdate();
+
+        } catch (SQLException e) {
+            logger.log(Level.WARNING, "Failed to update rank for " + uuid, e);
+        }
+    }
+
+    public boolean playerExists(String uuid) {
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(PLAYER_EXISTS)) {
+
+            ps.setString(1, uuid);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+
+        } catch (SQLException e) {
+            logger.log(Level.WARNING, "Failed to check player existence " + uuid, e);
+            return false;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Network stats operations
+    // -------------------------------------------------------------------------
+
+    public Long getStatValue(String key) {
+        String col = keyToColumn(key);
+        String sql = "SELECT `" + col + "` FROM `network_stats` WHERE `id` = 1;";
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+
+            if (rs.next()) {
+                long val = rs.getLong(col);
+                return rs.wasNull() ? null : val;
+            }
+            return null;
+
+        } catch (SQLException e) {
+            logger.log(Level.WARNING, "Failed to read stat " + key, e);
+            return null;
+        }
+    }
+
+    public void updateStat(String key, long value) {
+        String col = keyToColumn(key);
+        String sql = "UPDATE `network_stats` SET `" + col + "` = ? WHERE `id` = 1;";
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setLong(1, value);
+            ps.executeUpdate();
+
+        } catch (SQLException e) {
+            logger.log(Level.WARNING, "Failed to update stat " + key, e);
+        }
+    }
+
+    public void incrementStat(String key, long amount) {
+        String col = keyToColumn(key);
+        String sql = "UPDATE `network_stats` SET `" + col + "` = COALESCE(`" + col + "`, 0) + ? WHERE `id` = 1;";
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setLong(1, amount);
+            ps.executeUpdate();
+
+        } catch (SQLException e) {
+            logger.log(Level.WARNING, "Failed to increment stat " + key, e);
+        }
+    }
+
+    public void updateNetworkStats(long currentOnline, long totalPlayers) {
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(UPDATE_NETWORK_ONLINE)) {
+
+            ps.setLong(1, currentOnline);
+            ps.setLong(2, totalPlayers);
+            ps.setLong(3, currentOnline);
+            ps.executeUpdate();
+
+        } catch (SQLException e) {
+            logger.log(Level.WARNING, "Failed to update network stats", e);
+        }
+    }
+
+    // Whitelist to prevent any possibility of SQL injection via key strings
+    private static String keyToColumn(String key) {
+        switch (key) {
+            case "total_players":  return "total_players";
+            case "total_bans":     return "total_bans";
+            case "total_mutes":    return "total_mutes";
+            case "total_kicks":    return "total_kicks";
+            case "peak_online":    return "peak_online";
+            case "current_online": return "current_online";
+            default: throw new IllegalArgumentException("Unknown stat key: " + key);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+
+    public void close() {
+        if (dataSource != null && !dataSource.isClosed()) {
+            dataSource.close();
+        }
+    }
+
+    private Connection getConnection() throws SQLException {
+        return dataSource.getConnection();
+    }
+
+    private static Timestamp now() {
+        return Timestamp.valueOf(LocalDateTime.now(VIENNA));
+    }
+}
