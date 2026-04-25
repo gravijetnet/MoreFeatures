@@ -61,12 +61,20 @@ public class PlayerListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerJoin(PlayerJoinEvent event) {
         plugin.startPlaytimeTimer(event.getPlayer().getUniqueId());
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+            Phoenix phoenix = Phoenix.getInstance();
+            if (phoenix != null && phoenix.isApiEnabled()) plugin.syncNetworkStats(phoenix);
+        });
     }
 
     // Fires on every server quit — stops the per-player playtime timer
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerQuit(PlayerQuitEvent event) {
         plugin.cancelPlaytimeTimer(event.getPlayer().getUniqueId());
+        plugin.getServer().getScheduler().runTaskLaterAsynchronously(plugin, () -> {
+            Phoenix phoenix = Phoenix.getInstance();
+            if (phoenix != null && phoenix.isApiEnabled()) plugin.syncNetworkStats(phoenix);
+        }, 5L);
     }
 
     // Fires when a player disconnects from the whole network (not on server switches)
