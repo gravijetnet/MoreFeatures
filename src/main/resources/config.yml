@@ -1,16 +1,4 @@
-# Bridge Plugin Configuration
-
-database:
-  host: "localhost"
-  port: 3306
-  name: "phoenixbridge"
-  username: "phoenixbridge"
-  password: "phoenixbridge"
-  # Number of connections in the HikariCP pool.
-  # 10 is plenty for this workload; increase only if you see connection-wait warnings.
-  pool-size: 10
-
-sync:
-  # How often to sync all online players + network stats.
-  # 6000 ticks = 5 minutes. Minimum recommended: 1200 (1 minute).
-  interval-ticks: 6000
+# Enable the PhoenixAPI -> MySQL bridge on this server.
+# Set to false on servers where you do not want to sync to MySQL.
+phoenix-mysql:
+  enabled: false

@@ -68,10 +68,7 @@ public class DatabaseManager {
     private static final String UPDATE_PLAYER_RANK =
             "UPDATE `players` SET `rank` = ? WHERE `uuid` = ?;";
 
-    private static final String PLAYER_EXISTS =
-            "SELECT 1 FROM `players` WHERE `uuid` = ? LIMIT 1;";
-
-    // total_players is read directly from PhoenixAPI on every call; peak_online only ever increases
+    // total_players comes from countPlayers(); peak_online only ever increases
     private static final String UPDATE_NETWORK_ONLINE =
             "UPDATE `network_stats` SET"
             + "  `current_online` = ?,"
@@ -188,18 +185,16 @@ public class DatabaseManager {
         }
     }
 
-    public boolean playerExists(String uuid) {
+    public long countPlayers() {
         try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(PLAYER_EXISTS)) {
+             PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM `players`");
+             ResultSet rs = ps.executeQuery()) {
 
-            ps.setString(1, uuid);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
+            return rs.next() ? rs.getLong(1) : 0L;
 
         } catch (SQLException e) {
-            logger.log(Level.WARNING, "Failed to check player existence " + uuid, e);
-            return false;
+            logger.log(Level.WARNING, "Failed to count players", e);
+            return 0L;
         }
     }
 

@@ -3,6 +3,8 @@ package net.gravijet.morefeatures;
 import lombok.Getter;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import net.gravijet.morefeatures.config.BridgeConfig;
@@ -13,13 +15,13 @@ import net.gravijet.morefeatures.listener.RankListener;
 import net.gravijet.morefeatures.task.SyncTask;
 import xyz.refinedev.phoenix.Phoenix;
 import xyz.refinedev.phoenix.handler.ILoginHandler;
-import xyz.refinedev.phoenix.handler.INetworkHandler;
 import xyz.refinedev.phoenix.handler.IProfileHandler;
 import xyz.refinedev.phoenix.profile.IProfile;
 import xyz.refinedev.phoenix.profile.login.ILogin;
 import xyz.refinedev.phoenix.profile.punishment.IPunishment;
 import xyz.refinedev.phoenix.profile.punishment.PunishmentType;
 
+import java.io.File;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
@@ -41,14 +43,24 @@ public class Main extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        saveDefaultConfig();
-        bridgeConfig = new BridgeConfig(getConfig());
+        saveDefaultConfig(); // config.yml
+
+        if (!getConfig().getBoolean("phoenix-mysql.enabled", false)) {
+            getLogger().info("Phoenix→MySQL sync is disabled in config.yml — plugin idle.");
+            return;
+        }
+
+        // Create phoenix.yml from the bundled default if it doesn't exist yet
+        saveResource("phoenix.yml", false);
+        FileConfiguration phoenixCfg = YamlConfiguration.loadConfiguration(
+                new File(getDataFolder(), "phoenix.yml"));
+        bridgeConfig = new BridgeConfig(phoenixCfg);
 
         try {
             databaseManager = new DatabaseManager(bridgeConfig, getLogger());
             databaseManager.createTables();
         } catch (SQLException | RuntimeException e) {
-            getLogger().log(Level.SEVERE, "Could not connect to MySQL — disabling Bridge.", e);
+            getLogger().log(Level.SEVERE, "Could not connect to MySQL — disabling plugin.", e);
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
@@ -68,7 +80,7 @@ public class Main extends JavaPlugin {
         syncTask = new SyncTask(this);
         syncTask.runTaskTimerAsynchronously(this, 100L, bridgeConfig.getSyncIntervalTicks());
 
-        getLogger().info("Bridge enabled — network stats synced every "
+        getLogger().info("Phoenix→MySQL sync enabled — network stats synced every "
                 + (bridgeConfig.getSyncIntervalTicks() / 20) + " seconds.");
     }
 
@@ -82,7 +94,7 @@ public class Main extends JavaPlugin {
         if (databaseManager != null) {
             databaseManager.close();
         }
-        getLogger().info("Bridge disabled.");
+        getLogger().info("Plugin disabled.");
     }
 
     // -------------------------------------------------------------------------
@@ -93,6 +105,11 @@ public class Main extends JavaPlugin {
     public boolean onCommand(CommandSender sender, Command command,
                              String label, String[] args) {
         if (!command.getName().equalsIgnoreCase("bridgesync")) return false;
+
+        if (databaseManager == null) {
+            sender.sendMessage("§cPhoenix→MySQL sync is disabled on this server.");
+            return true;
+        }
 
         if (!sender.hasPermission("bridge.sync")) {
             sender.sendMessage("§cYou don't have permission to do that.");
@@ -112,7 +129,7 @@ public class Main extends JavaPlugin {
     // -------------------------------------------------------------------------
 
     public void startPlaytimeTimer(UUID uuid) {
-        // Cancel any existing timer for this UUID first (handles re-joins without quit)
+        if (databaseManager == null) return;
         cancelPlaytimeTimer(uuid);
 
         int taskId = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
@@ -145,9 +162,8 @@ public class Main extends JavaPlugin {
     // -------------------------------------------------------------------------
 
     public void syncNetworkStats(Phoenix phoenix) {
-        INetworkHandler net = phoenix.getNetworkHandler();
-        long currentOnline = net.getAllOnline();
-        long totalPlayers  = net.getAllUuids().size();
+        long currentOnline = phoenix.getNetworkHandler().getOnline();
+        long totalPlayers  = databaseManager.countPlayers();
         databaseManager.updateNetworkStats(currentOnline, totalPlayers);
     }
 

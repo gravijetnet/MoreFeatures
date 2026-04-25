@@ -1,0 +1,16 @@
+# PhoenixAPI -> MySQL Bridge Configuration
+# Only used when phoenix-mysql.enabled is true in config.yml
+
+database:
+  host: "localhost"
+  port: 3306
+  name: "phoenixbridge"
+  username: "phoenixbridge"
+  password: "phoenixbridge"
+  # Number of connections in the HikariCP pool.
+  pool-size: 10
+
+sync:
+  # How often to run a drift-correction sync of network stats.
+  # 6000 ticks = 5 minutes. Minimum recommended: 1200 (1 minute).
+  interval-ticks: 6000
