@@ -38,6 +38,14 @@
             <scope>provided</scope>
         </dependency>
 
+        <!-- Spigot NMS (server provides this at runtime; required for fullbright via NMS) -->
+        <dependency>
+            <groupId>org.spigotmc</groupId>
+            <artifactId>spigot</artifactId>
+            <version>1.8.8-R0.1-SNAPSHOT</version>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- Phoenix API (server provides this at runtime) -->
         <dependency>
             <groupId>xyz.refinedev.phoenix</groupId>

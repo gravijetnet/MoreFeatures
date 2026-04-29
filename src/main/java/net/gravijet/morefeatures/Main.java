@@ -15,15 +15,19 @@ import net.gravijet.morefeatures.music.listener.MusicListener;
 import net.gravijet.morefeatures.music.util.SongDownloader;
 import net.gravijet.morefeatures.config.BridgeConfig;
 import net.gravijet.morefeatures.database.DatabaseManager;
+import net.gravijet.morefeatures.autoplace.AutoPlaceConfig;
+import net.gravijet.morefeatures.autoplace.AutoPlaceInjector;
+import net.gravijet.morefeatures.autoplace.AutoPlaceListener;
+import net.gravijet.morefeatures.fullbright.FullbrightCommand;
+import net.gravijet.morefeatures.fullbright.FullbrightListener;
+import net.gravijet.morefeatures.fullbright.FullbrightManager;
 import net.gravijet.morefeatures.listener.PlayerListener;
 import net.gravijet.morefeatures.listener.PunishmentListener;
 import net.gravijet.morefeatures.listener.RankListener;
+import net.gravijet.morefeatures.phoenix.NetworkStatsSync;
+import net.gravijet.morefeatures.phoenix.PlaytimeSync;
 import net.gravijet.morefeatures.task.SyncTask;
 import xyz.refinedev.phoenix.Phoenix;
-import xyz.refinedev.phoenix.handler.ILoginHandler;
-import xyz.refinedev.phoenix.handler.IProfileHandler;
-import xyz.refinedev.phoenix.profile.IProfile;
-import xyz.refinedev.phoenix.profile.login.ILogin;
 import xyz.refinedev.phoenix.profile.punishment.IPunishment;
 import xyz.refinedev.phoenix.profile.punishment.PunishmentType;
 
@@ -40,6 +44,8 @@ public class Main extends JavaPlugin {
 
     private BridgeConfig bridgeConfig;
     private DatabaseManager databaseManager;
+    private PlaytimeSync playtimeSync;
+    private NetworkStatsSync networkStatsSync;
     private SyncTask syncTask;
 
     // Music system
@@ -47,24 +53,29 @@ public class Main extends JavaPlugin {
     private MusicManager musicManager;
     private SongDownloader songDownloader;
 
-    // Tracks the per-player staggered playtime update task IDs
+    // Fullbright system
+    private FullbrightManager fullbrightManager;
+
+    // AutoPlace detection system
+    private AutoPlaceInjector autoPlaceInjector;
+
     private final Map<UUID, Integer> playtimeTasks = new ConcurrentHashMap<>();
 
     // -------------------------------------------------------------------------
 
     @Override
     public void onEnable() {
-        saveDefaultConfig(); // config.yml
+        saveDefaultConfig();
 
-        // --- Music system (always initializes) ---
         initMusic();
+        initFullbright();
+        initAutoPlace();
 
         if (!getConfig().getBoolean("phoenix-mysql.enabled", false)) {
             getLogger().info("Phoenix→MySQL sync is disabled in config.yml — plugin idle.");
             return;
         }
 
-        // Create phoenix.yml from the bundled default if it doesn't exist yet
         saveResource("phoenix.yml", false);
         FileConfiguration phoenixCfg = YamlConfiguration.loadConfiguration(
                 new File(getDataFolder(), "phoenix.yml"));
@@ -79,18 +90,19 @@ public class Main extends JavaPlugin {
             return;
         }
 
+        playtimeSync = new PlaytimeSync(this, databaseManager);
+        networkStatsSync = new NetworkStatsSync(databaseManager);
+
         getServer().getScheduler().runTaskAsynchronously(this, this::initPunishmentCounts);
 
         getServer().getPluginManager().registerEvents(new PlayerListener(this),    this);
         getServer().getPluginManager().registerEvents(new PunishmentListener(this), this);
         getServer().getPluginManager().registerEvents(new RankListener(this),      this);
 
-        // Start staggered timers for players already online when the plugin loads
         for (Player player : getServer().getOnlinePlayers()) {
             startPlaytimeTimer(player.getUniqueId());
         }
 
-        // Periodic network-stats drift-correction (player data is handled by events + timers)
         syncTask = new SyncTask(this);
         syncTask.runTaskTimerAsynchronously(this, 100L, bridgeConfig.getSyncIntervalTicks());
 
@@ -100,11 +112,9 @@ public class Main extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        // Stop all music playback
         if (musicManager != null) {
             musicManager.stopAll();
         }
-
         if (syncTask != null) {
             syncTask.cancel();
         }
@@ -117,7 +127,46 @@ public class Main extends JavaPlugin {
     }
 
     // -------------------------------------------------------------------------
-    //  Music system initialisation
+    //  Fullbright
+    // -------------------------------------------------------------------------
+
+    private void initFullbright() {
+        boolean fbEnabled = getConfig().getBoolean("fullbright.enabled", false);
+        fullbrightManager = new FullbrightManager(this, fbEnabled);
+
+        FullbrightCommand fbCmd = new FullbrightCommand(fullbrightManager);
+        getCommand("fullbright").setExecutor(fbCmd);
+        getCommand("fullbright").setTabCompleter(fbCmd);
+        getServer().getPluginManager().registerEvents(new FullbrightListener(fullbrightManager), this);
+
+        if (fbEnabled) {
+            getServer().getScheduler().runTask(this, fullbrightManager::relightAllLoaded);
+        }
+        getLogger().info("Fullbright system initialised (enabled=" + fbEnabled + ").");
+    }
+
+    // -------------------------------------------------------------------------
+    //  AutoPlace
+    // -------------------------------------------------------------------------
+
+    private void initAutoPlace() {
+        if (!getConfig().getBoolean("autoplace.enabled", true)) {
+            getLogger().info("AutoPlace detection disabled in config.yml.");
+            return;
+        }
+
+        AutoPlaceConfig apConfig = new AutoPlaceConfig(this);
+        autoPlaceInjector = new AutoPlaceInjector(this, apConfig);
+
+        for (Player player : getServer().getOnlinePlayers()) {
+            autoPlaceInjector.inject(player);
+        }
+        getServer().getPluginManager().registerEvents(new AutoPlaceListener(autoPlaceInjector), this);
+        getLogger().info("AutoPlace detection enabled.");
+    }
+
+    // -------------------------------------------------------------------------
+    //  Music
     // -------------------------------------------------------------------------
 
     private void initMusic() {
@@ -125,27 +174,22 @@ public class Main extends JavaPlugin {
         File songsFolder = new File(getDataFolder(), "songs");
         songDownloader = new SongDownloader(getLogger(), songsFolder);
 
-        // Download missing songs off the main thread
         getServer().getScheduler().runTaskAsynchronously(this, () -> {
             int count = songDownloader.downloadMissing(musicConfig);
-            if (count > 0) {
-                getLogger().info("Downloaded " + count + " new song(s).");
-            }
+            if (count > 0) getLogger().info("Downloaded " + count + " new song(s).");
         });
 
+        // MusicManager registers SongEndEvent itself
         musicManager = new MusicManager(this, songsFolder, musicConfig.getVolume());
 
-        // Register /music command
         MusicCommand musicCmd = new MusicCommand(musicManager, songDownloader, musicConfig);
         getCommand("music").setExecutor(musicCmd);
         getCommand("music").setTabCompleter(musicCmd);
 
-        // Register /rickroll command
         RickrollCommand rickrollCmd = new RickrollCommand(musicManager, musicConfig);
         getCommand("rickroll").setExecutor(rickrollCmd);
         getCommand("rickroll").setTabCompleter(rickrollCmd);
 
-        // Register quit listener for cleanup
         getServer().getPluginManager().registerEvents(new MusicListener(musicManager), this);
 
         getLogger().info("Music system initialised. "
@@ -153,7 +197,7 @@ public class Main extends JavaPlugin {
     }
 
     // -------------------------------------------------------------------------
-    // /bridgesync command
+    //  /bridgesync command
     // -------------------------------------------------------------------------
 
     @Override
@@ -165,7 +209,6 @@ public class Main extends JavaPlugin {
             sender.sendMessage("§cPhoenix→MySQL sync is disabled on this server.");
             return true;
         }
-
         if (!sender.hasPermission("bridge.sync")) {
             sender.sendMessage("§cYou don't have permission to do that.");
             return true;
@@ -180,7 +223,7 @@ public class Main extends JavaPlugin {
     }
 
     // -------------------------------------------------------------------------
-    // Per-player playtime timer management
+    //  Per-player playtime timer
     // -------------------------------------------------------------------------
 
     public void startPlaytimeTimer(UUID uuid) {
@@ -188,19 +231,8 @@ public class Main extends JavaPlugin {
         cancelPlaytimeTimer(uuid);
 
         int taskId = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
-            Phoenix phoenix = Phoenix.getInstance();
-            if (phoenix == null || !phoenix.isApiEnabled()) return;
-
-            IProfileHandler profileHandler = phoenix.getProfileHandler();
-            ILoginHandler loginHandler = phoenix.getLoginHandler();
-
-            IProfile profile = profileHandler.getProfile(uuid);
-            if (profile == null) return;
-
-            List<ILogin> logins = loginHandler.getCachedLogins(uuid);
-            int playtime = (int) (profile.getPlayTime(logins) / 1000L);
-            databaseManager.updatePlayerPlaytime(uuid.toString(), playtime);
-        }, 6000L, 6000L).getTaskId(); // first fire + repeat every 5 minutes
+            if (playtimeSync != null) playtimeSync.syncPlaytime(uuid);
+        }, 6000L, 6000L).getTaskId();
 
         playtimeTasks.put(uuid, taskId);
     }
@@ -213,17 +245,15 @@ public class Main extends JavaPlugin {
     }
 
     // -------------------------------------------------------------------------
-    // Shared network stats helper — used by all listeners
+    //  Network stats helper — used by listeners
     // -------------------------------------------------------------------------
 
     public void syncNetworkStats(Phoenix phoenix) {
-        long currentOnline = phoenix.getNetworkHandler().getOnline();
-        long totalPlayers  = databaseManager.countPlayers();
-        databaseManager.updateNetworkStats(currentOnline, totalPlayers);
+        if (networkStatsSync != null) networkStatsSync.sync(phoenix);
     }
 
     // -------------------------------------------------------------------------
-    // One-time initialisation of punishment counts
+    //  One-time punishment count seed
     // -------------------------------------------------------------------------
 
     private void initPunishmentCounts() {
@@ -231,10 +261,7 @@ public class Main extends JavaPlugin {
         Long existingMutes = databaseManager.getStatValue("total_mutes");
         Long existingKicks = databaseManager.getStatValue("total_kicks");
 
-        // null means the column was never written; any non-null value (even 0) means already seeded
-        if (existingBans != null || existingMutes != null || existingKicks != null) {
-            return;
-        }
+        if (existingBans != null || existingMutes != null || existingKicks != null) return;
 
         Phoenix phoenix = Phoenix.getInstance();
         if (phoenix == null || !phoenix.isApiEnabled()) {
@@ -242,7 +269,7 @@ public class Main extends JavaPlugin {
             return;
         }
 
-        getLogger().info("First run detected: loading all punishments from Phoenix to seed counts...");
+        getLogger().info("First run: seeding punishment counts from Phoenix...");
 
         phoenix.getPunishmentHandler().getAllPunishments()
                 .thenAccept((List<IPunishment> punishments) -> {
@@ -253,17 +280,13 @@ public class Main extends JavaPlugin {
                         else if (type == PunishmentType.MUTE) mutes++;
                         else if (type == PunishmentType.KICK) kicks++;
                     }
-
                     databaseManager.updateStat("total_bans",  bans);
                     databaseManager.updateStat("total_mutes", mutes);
                     databaseManager.updateStat("total_kicks", kicks);
-
-                    getLogger().info("Seeded punishment counts — bans: " + bans
-                            + ", mutes: " + mutes + ", kicks: " + kicks + ".");
+                    getLogger().info("Seeded — bans: " + bans + ", mutes: " + mutes + ", kicks: " + kicks);
                 })
                 .exceptionally(ex -> {
-                    getLogger().log(Level.WARNING,
-                            "Failed to load initial punishment counts from Phoenix", ex);
+                    getLogger().log(Level.WARNING, "Failed to load initial punishment counts", ex);
                     return null;
                 });
     }

@@ -1,4 +1,18 @@
-# Enable the PhoenixAPI -> MySQL bridge on this server.
-# Set to false on servers where you do not want to sync to MySQL.
+# MoreFeatures — feature flags
+# Enable or disable each feature here.
+# Per-feature settings live in their own config files (e.g. antiautoplace.yml).
+
+# Sync player data from PhoenixAPI to a MySQL database.
+# Connection settings are in phoenix.yml.
 phoenix-mysql:
   enabled: false
+
+# Server-wide fullbright: forces all chunk sections to maximum sky/block light via NMS.
+# Toggle at runtime with /fullbright — requires morefeatures.fullbright (op).
+fullbright:
+  enabled: false
+
+# AutoPlace detection: catches clients automating block placements via packet inspection.
+# Detection settings (alerts, punishments, cancel) are in antiautoplace.yml.
+autoplace:
+  enabled: true

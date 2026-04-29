@@ -17,16 +17,11 @@ public class SyncTask extends BukkitRunnable {
     @Override
     public void run() {
         try {
-            doSync();
+            Phoenix phoenix = Phoenix.getInstance();
+            if (phoenix == null || !phoenix.isApiEnabled()) return;
+            plugin.syncNetworkStats(phoenix);
         } catch (Exception e) {
             plugin.getLogger().log(Level.WARNING, "Network stats sync threw an exception", e);
         }
-    }
-
-    private void doSync() {
-        Phoenix phoenix = Phoenix.getInstance();
-        if (phoenix == null || !phoenix.isApiEnabled()) return;
-
-        plugin.syncNetworkStats(phoenix);
     }
 }

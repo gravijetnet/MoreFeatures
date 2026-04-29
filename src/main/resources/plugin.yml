@@ -19,6 +19,10 @@ commands:
     description: Rickroll yourself or another player
     permission: morefeatures.rickroll
     usage: /rickroll [player] <time>
+  fullbright:
+    description: Toggle server-wide fullbright (max chunk lighting)
+    permission: morefeatures.fullbright
+    usage: /fullbright [on|off|toggle|status]
 
 permissions:
   bridge.sync:
@@ -50,4 +54,13 @@ permissions:
     default: true
   morefeatures.rickroll.others:
     description: Rickroll other players
+    default: op
+  morefeatures.fullbright:
+    description: Toggle server-wide fullbright via /fullbright
+    default: op
+  morefeatures.autoplace.bypass:
+    description: Bypass AutoPlace detection entirely
+    default: op
+  morefeatures.autoplace.alerts:
+    description: Receive staff alerts when a player is flagged for AutoPlace
     default: op

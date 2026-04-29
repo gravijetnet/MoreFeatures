@@ -219,7 +219,7 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
         }
 
         Player player = (Player) sender;
-        com.xxmicloxx.NoteBlockAPI.SongPlayer sp = musicManager.getActiveSong(
+        com.xxmicloxx.NoteBlockAPI.songplayer.SongPlayer sp = musicManager.getActiveSong(
                 player.getUniqueId());
         if (sp == null) {
             sender.sendMessage("§7No song is currently playing for you.");

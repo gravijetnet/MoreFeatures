@@ -1,0 +1,23 @@
+# AntiAutoPlace detection configuration
+# Controls how the AutoPlace detection system responds to flagged players.
+#
+# To toggle the feature on/off entirely, use config.yml → autoplace.enabled
+#
+# Permissions:
+#   morefeatures.autoplace.bypass  — skip detection for this player (default: op)
+#   morefeatures.autoplace.alerts  — receive staff alert messages   (default: op)
+
+# Cancel the offending placement and restore the block client-side.
+# Not required when punishments are enabled; disable for a slight speedup.
+cancel: false
+
+alerts:
+  enabled: true
+  # Placeholders: %player%, %uuid%
+  message: "&c[AutoPlace] &f%player% &7has been flagged for AutoPlace!"
+
+punishments:
+  enabled: false
+  # Console command to run when a player is flagged.
+  # Placeholders: %player%, %uuid%
+  command: "ban %player% 30d AutoPlace"

@@ -28,7 +28,6 @@ public class PlayerListener implements Listener {
         this.plugin = plugin;
     }
 
-    // Fires when a player first joins the whole network (not on server switches)
     @EventHandler(priority = EventPriority.MONITOR)
     public void onNetworkJoin(ProfileNetworkJoinEvent event) {
         UUID uuid = event.getUuid();
@@ -57,7 +56,6 @@ public class PlayerListener implements Listener {
         });
     }
 
-    // Fires on every server join — starts (or restarts) the per-player 5-minute playtime timer
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerJoin(PlayerJoinEvent event) {
         plugin.startPlaytimeTimer(event.getPlayer().getUniqueId());
@@ -67,29 +65,33 @@ public class PlayerListener implements Listener {
         });
     }
 
-    // Fires on every server quit — stops the per-player playtime timer
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerQuit(PlayerQuitEvent event) {
-        plugin.cancelPlaytimeTimer(event.getPlayer().getUniqueId());
+        UUID uuid = event.getPlayer().getUniqueId();
+
+        // Final playtime sync before cancelling the timer
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+            if (plugin.getPlaytimeSync() != null) plugin.getPlaytimeSync().syncPlaytime(uuid);
+        });
+
+        plugin.cancelPlaytimeTimer(uuid);
+
         plugin.getServer().getScheduler().runTaskLaterAsynchronously(plugin, () -> {
             Phoenix phoenix = Phoenix.getInstance();
             if (phoenix != null && phoenix.isApiEnabled()) plugin.syncNetworkStats(phoenix);
         }, 5L);
     }
 
-    // Fires when a player disconnects from the whole network (not on server switches)
     @EventHandler(priority = EventPriority.MONITOR)
     public void onNetworkLeave(ProfileNetworkLeaveEvent event) {
         UUID uuid = event.getUuid();
 
-        // Short delay so Phoenix can finalise the logout record before we read it
         plugin.getServer().getScheduler().runTaskLaterAsynchronously(plugin, () -> {
             Phoenix phoenix = Phoenix.getInstance();
             if (phoenix == null || !phoenix.isApiEnabled()) {
                 plugin.getDatabaseManager().setPlayerOnline(uuid.toString(), false);
                 return;
             }
-
             plugin.getDatabaseManager().setPlayerOnline(uuid.toString(), false);
             plugin.syncNetworkStats(phoenix);
         }, 5L);
@@ -97,19 +99,17 @@ public class PlayerListener implements Listener {
 
     // -------------------------------------------------------------------------
 
-    // Returns the earliest login timestamp from the full Phoenix login history
     private static Timestamp firstSeenFromPhoenix(ILoginHandler loginHandler, UUID uuid) {
         try {
-            List<ILogin> allLogins = loginHandler.getDatabaseLoginsSync(uuid);
-            if (allLogins != null && !allLogins.isEmpty()) {
+            List<ILogin> logins = loginHandler.getDatabaseLoginsSync(uuid);
+            if (logins != null && !logins.isEmpty()) {
                 long min = Long.MAX_VALUE;
-                for (ILogin login : allLogins) {
+                for (ILogin login : logins) {
                     if (login.getLogin() < min) min = login.getLogin();
                 }
                 return new Timestamp(min);
             }
-        } catch (Exception e) {
-            // fall through to current time
+        } catch (Exception ignored) {
         }
         return new Timestamp(System.currentTimeMillis());
     }

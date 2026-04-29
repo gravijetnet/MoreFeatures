@@ -1,10 +1,14 @@
 package net.gravijet.morefeatures.music;
 
-import com.xxmicloxx.NoteBlockAPI.NBSDecoder;
-import com.xxmicloxx.NoteBlockAPI.RadioSongPlayer;
-import com.xxmicloxx.NoteBlockAPI.Song;
-import com.xxmicloxx.NoteBlockAPI.SongPlayer;
+import com.xxmicloxx.NoteBlockAPI.event.SongEndEvent;
+import com.xxmicloxx.NoteBlockAPI.model.SoundCategory;
+import com.xxmicloxx.NoteBlockAPI.songplayer.RadioSongPlayer;
+import com.xxmicloxx.NoteBlockAPI.songplayer.SongPlayer;
+import com.xxmicloxx.NoteBlockAPI.utils.NBSDecoder;
+import com.xxmicloxx.NoteBlockAPI.model.Song;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
@@ -19,30 +23,40 @@ import java.util.logging.Logger;
 
 /**
  * Core music engine that wraps NoteBlockAPI.
- * <p>
- * Each player can have at most one active song. When a new song is played,
- * the previous one is stopped and cleaned up automatically.
+ *
+ * Each player can have at most one active song.  When a new song starts the
+ * previous one is stopped first.  Cleanup on natural song-end is handled by
+ * {@link SongEndEvent} so timing is always exact — no manual Bukkit-scheduler
+ * timers that drift relative to the NBS playback tempo.
  */
-public class MusicManager {
+public class MusicManager implements Listener {
 
     private final JavaPlugin plugin;
     private final Logger logger;
     private final File songsFolder;
 
-    /** Default playback volume (1-100). */
     private volatile byte volume;
 
-    /** Currently active SongPlayer per player UUID. */
     private final Map<UUID, SongPlayer> activePlayers = new ConcurrentHashMap<>();
-
-    /** Scheduled auto-stop task IDs per player UUID. */
-    private final Map<UUID, Integer> stopTasks = new ConcurrentHashMap<>();
 
     public MusicManager(JavaPlugin plugin, File songsFolder, byte volume) {
         this.plugin = plugin;
         this.logger = plugin.getLogger();
         this.songsFolder = songsFolder;
         this.volume = volume;
+
+        plugin.getServer().getPluginManager().registerEvents(this, plugin);
+    }
+
+    // -----------------------------------------------------------------
+    //  SongEndEvent — fired by NoteBlockAPI when a song ends naturally
+    // -----------------------------------------------------------------
+
+    @EventHandler
+    public void onSongEnd(SongEndEvent event) {
+        SongPlayer sp = event.getSongPlayer();
+        // Remove the entry whose value matches this SongPlayer
+        activePlayers.values().remove(sp);
     }
 
     // -----------------------------------------------------------------
@@ -52,9 +66,7 @@ public class MusicManager {
     /**
      * Plays a song for a player. Stops any currently-playing song first.
      *
-     * @param player   the target player
-     * @param filename the .nbs filename (e.g. "rickroll.nbs")
-     * @return true if the song was loaded and playback started
+     * @return true if the song started successfully
      */
     public boolean playSong(Player player, String filename) {
         File file = new File(songsFolder, filename);
@@ -78,20 +90,13 @@ public class MusicManager {
             return false;
         }
 
-        // Stop current song if any
         stopSongInternal(player.getUniqueId());
 
-        // Create and start the player
-        SongPlayer songPlayer;
+        RadioSongPlayer songPlayer;
         try {
-            songPlayer = new RadioSongPlayer(song);
-
-            // ---- 1.8.8 smooth-playback optimisations ----
+            songPlayer = new RadioSongPlayer(song, SoundCategory.MASTER);
             songPlayer.setAutoDestroy(true);
             songPlayer.setVolume(volume);
-            songPlayer.setFadeStart((byte) 100);   // disable fade-in
-            songPlayer.setFadeTarget((byte) 100);  // disable fade-out
-
             songPlayer.addPlayer(player);
             songPlayer.setPlaying(true);
         } catch (Exception e) {
@@ -102,35 +107,16 @@ public class MusicManager {
 
         activePlayers.put(player.getUniqueId(), songPlayer);
 
-        // Schedule auto-cleanup when the song naturally ends
-        short lengthTicks = song.getLength();
-        if (lengthTicks > 0) {
-            // Convert ticks to server ticks (1 tick = 1/20s). Add a small buffer.
-            long delayTicks = Math.max(lengthTicks + 10, lengthTicks + 1);
-            int taskId = plugin.getServer().getScheduler().runTaskLater(plugin,
-                    () -> onSongFinished(player.getUniqueId()), delayTicks).getTaskId();
-            stopTasks.put(player.getUniqueId(), taskId);
-        }
-
         logger.info("Playing '" + filename + "' for " + player.getName()
-                + " (" + lengthTicks + " ticks)");
+                + " (" + song.getLength() + " NBS ticks, speed=" + song.getSpeed() + ")");
         return true;
     }
 
-    /**
-     * Stops the currently-playing song for a player.
-     *
-     * @param player the player whose song should stop
-     */
     public void stopSong(Player player) {
         stopSongInternal(player.getUniqueId());
     }
 
-    /**
-     * Stops all active songs across all players.
-     */
     public void stopAll() {
-        // Copy keys to avoid ConcurrentModificationException
         List<UUID> uuids = new ArrayList<>(activePlayers.keySet());
         for (UUID uuid : uuids) {
             stopSongInternal(uuid);
@@ -138,70 +124,41 @@ public class MusicManager {
         logger.info("Stopped all active songs (" + uuids.size() + " player(s)).");
     }
 
-    /**
-     * Returns the currently playing song info for a player, or null.
-     */
     public SongPlayer getActiveSong(UUID uuid) {
         return activePlayers.get(uuid);
     }
 
-    /**
-     * Lists all .nbs filenames in the songs folder.
-     *
-     * @return list of filenames (sorted alphabetically)
-     */
     public List<String> getAvailableSongs() {
         List<String> list = new ArrayList<>();
-        if (!songsFolder.exists() || !songsFolder.isDirectory()) {
-            return list;
-        }
+        if (!songsFolder.exists() || !songsFolder.isDirectory()) return list;
 
         File[] files = songsFolder.listFiles(
                 (dir, name) -> name.toLowerCase().endsWith(".nbs"));
         if (files == null) return list;
 
-        for (File f : files) {
-            list.add(f.getName());
-        }
+        for (File f : files) list.add(f.getName());
         Collections.sort(list, String.CASE_INSENSITIVE_ORDER);
         return list;
     }
 
-    /**
-     * Returns a random song filename from the available .nbs files,
-     * or null if no songs exist.
-     */
     public String getRandomSong() {
         List<String> songs = getAvailableSongs();
         if (songs.isEmpty()) return null;
         return songs.get((int) (Math.random() * songs.size()));
     }
 
-    /**
-     * Sets the default volume for new SongPlayers (1-100).
-     * Does not affect already-playing songs.
-     */
-    public void setVolume(byte volume) {
-        this.volume = (byte) Math.max(1, Math.min(100, volume));
+    public void setVolume(byte v) {
+        this.volume = (byte) Math.max(1, Math.min(100, v));
     }
 
-    /**
-     * Returns the current default volume.
-     */
     public byte getVolume() {
         return volume;
     }
 
-    /**
-     * Returns the plugin instance for scheduling tasks.
-     */
     public JavaPlugin getPlugin() {
         return plugin;
     }
 
-    /**
-     * Returns the songs folder for use by other components.
-     */
     public File getSongsFolder() {
         return songsFolder;
     }
@@ -211,13 +168,6 @@ public class MusicManager {
     // -----------------------------------------------------------------
 
     private void stopSongInternal(UUID uuid) {
-        // Cancel the scheduled auto-stop task
-        Integer taskId = stopTasks.remove(uuid);
-        if (taskId != null) {
-            plugin.getServer().getScheduler().cancelTask(taskId);
-        }
-
-        // Stop and destroy the SongPlayer
         SongPlayer sp = activePlayers.remove(uuid);
         if (sp != null) {
             try {
@@ -225,22 +175,6 @@ public class MusicManager {
                 sp.destroy();
             } catch (Exception e) {
                 logger.log(Level.FINE, "Error destroying SongPlayer for " + uuid, e);
-            }
-        }
-    }
-
-    /**
-     * Called by the scheduled task when a song finishes naturally.
-     */
-    private void onSongFinished(UUID uuid) {
-        stopTasks.remove(uuid);
-        SongPlayer sp = activePlayers.remove(uuid);
-        if (sp != null) {
-            try {
-                sp.setPlaying(false);
-                sp.destroy();
-            } catch (Exception e) {
-                logger.log(Level.FINE, "Error cleaning up finished SongPlayer for " + uuid, e);
             }
         }
     }
