@@ -108,6 +108,7 @@ public class Main extends JavaPlugin {
 
         getLogger().info("Phoenix→MySQL sync enabled — network stats synced every "
                 + (bridgeConfig.getSyncIntervalTicks() / 20) + " seconds.");
+
     }
 
     @Override
