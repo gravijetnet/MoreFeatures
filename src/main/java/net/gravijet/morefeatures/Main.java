@@ -7,6 +7,12 @@ import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
+import net.gravijet.morefeatures.music.MusicConfig;
+import net.gravijet.morefeatures.music.MusicManager;
+import net.gravijet.morefeatures.music.command.MusicCommand;
+import net.gravijet.morefeatures.music.command.RickrollCommand;
+import net.gravijet.morefeatures.music.listener.MusicListener;
+import net.gravijet.morefeatures.music.util.SongDownloader;
 import net.gravijet.morefeatures.config.BridgeConfig;
 import net.gravijet.morefeatures.database.DatabaseManager;
 import net.gravijet.morefeatures.listener.PlayerListener;
@@ -36,6 +42,11 @@ public class Main extends JavaPlugin {
     private DatabaseManager databaseManager;
     private SyncTask syncTask;
 
+    // Music system
+    private MusicConfig musicConfig;
+    private MusicManager musicManager;
+    private SongDownloader songDownloader;
+
     // Tracks the per-player staggered playtime update task IDs
     private final Map<UUID, Integer> playtimeTasks = new ConcurrentHashMap<>();
 
@@ -44,6 +55,9 @@ public class Main extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig(); // config.yml
+
+        // --- Music system (always initializes) ---
+        initMusic();
 
         if (!getConfig().getBoolean("phoenix-mysql.enabled", false)) {
             getLogger().info("Phoenix→MySQL sync is disabled in config.yml — plugin idle.");
@@ -86,6 +100,11 @@ public class Main extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        // Stop all music playback
+        if (musicManager != null) {
+            musicManager.stopAll();
+        }
+
         if (syncTask != null) {
             syncTask.cancel();
         }
@@ -95,6 +114,42 @@ public class Main extends JavaPlugin {
             databaseManager.close();
         }
         getLogger().info("Plugin disabled.");
+    }
+
+    // -------------------------------------------------------------------------
+    //  Music system initialisation
+    // -------------------------------------------------------------------------
+
+    private void initMusic() {
+        musicConfig = new MusicConfig(this);
+        File songsFolder = new File(getDataFolder(), "songs");
+        songDownloader = new SongDownloader(getLogger(), songsFolder);
+
+        // Download missing songs off the main thread
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            int count = songDownloader.downloadMissing(musicConfig);
+            if (count > 0) {
+                getLogger().info("Downloaded " + count + " new song(s).");
+            }
+        });
+
+        musicManager = new MusicManager(this, songsFolder, musicConfig.getVolume());
+
+        // Register /music command
+        MusicCommand musicCmd = new MusicCommand(musicManager, songDownloader, musicConfig);
+        getCommand("music").setExecutor(musicCmd);
+        getCommand("music").setTabCompleter(musicCmd);
+
+        // Register /rickroll command
+        RickrollCommand rickrollCmd = new RickrollCommand(musicManager, musicConfig);
+        getCommand("rickroll").setExecutor(rickrollCmd);
+        getCommand("rickroll").setTabCompleter(rickrollCmd);
+
+        // Register quit listener for cleanup
+        getServer().getPluginManager().registerEvents(new MusicListener(musicManager), this);
+
+        getLogger().info("Music system initialised. "
+                + musicManager.getAvailableSongs().size() + " song(s) available.");
     }
 
     // -------------------------------------------------------------------------

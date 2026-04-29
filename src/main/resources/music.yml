@@ -1,0 +1,19 @@
+# Music configuration for MoreFeatures
+# 
+# Each song entry has:
+#   url      — Direct link to an .nbs file (must be publicly accessible)
+#   filename — Local filename to save as (stored in plugins/MoreFeatures/songs/)
+#
+# Songs are downloaded once on startup if missing locally.
+# Add or remove entries below as desired.
+
+# Which song file /rickroll plays (must exist in the songs folder)
+rickroll_file: "NeverGonnaGiveYouUp.nbs"
+
+# Default playback volume (1-100). Lower values reduce audio clipping on 1.8.8 clients.
+# Change this, or use /music volume <1-100> in-game.
+volume: 80
+
+songs:
+  - url: "https://example.invalid/minecraft/nbs/NeverGonnaGiveYouUp.nbs"
+    filename: "NeverGonnaGiveYouUp.nbs"
