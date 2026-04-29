@@ -106,10 +106,11 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
             }
         }
 
-        boolean ok = musicManager.playSong(player, filename);
-        if (ok) {
-            sender.sendMessage("§aNow playing: " + filename);
-        }
+        final String finalFilename = filename;
+        sender.sendMessage("§7Loading song...");
+        musicManager.playSongAsync(player, finalFilename,
+                () -> sender.sendMessage("§aNow playing: " + finalFilename),
+                null);
         return true;
     }
 
@@ -160,11 +161,14 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
             }
         }
 
-        boolean ok = musicManager.playSong(target, filename);
-        if (ok) {
-            sender.sendMessage("§aPlaying '" + filename + "' for " + target.getName() + ".");
-            target.sendMessage("§a" + sender.getName() + " started playing: " + filename);
-        }
+        final String finalFilename = filename;
+        final Player finalTarget = target;
+        musicManager.playSongAsync(finalTarget, finalFilename,
+                () -> {
+                    sender.sendMessage("§aPlaying '" + finalFilename + "' for " + finalTarget.getName() + ".");
+                    finalTarget.sendMessage("§a" + sender.getName() + " started playing: " + finalFilename);
+                },
+                () -> sender.sendMessage("§cFailed to start playback for " + finalTarget.getName() + "."));
         return true;
     }
 

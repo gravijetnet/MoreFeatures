@@ -59,10 +59,7 @@ public class PlayerListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerJoin(PlayerJoinEvent event) {
         plugin.startPlaytimeTimer(event.getPlayer().getUniqueId());
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
-            Phoenix phoenix = Phoenix.getInstance();
-            if (phoenix != null && phoenix.isApiEnabled()) plugin.syncNetworkStats(phoenix);
-        });
+        // Network stats sync on join is already handled by onNetworkJoin above
     }
 
     @EventHandler(priority = EventPriority.MONITOR)

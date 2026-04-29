@@ -24,10 +24,10 @@ import java.util.logging.Logger;
 /**
  * Core music engine that wraps NoteBlockAPI.
  *
- * Each player can have at most one active song.  When a new song starts the
- * previous one is stopped first.  Cleanup on natural song-end is handled by
- * {@link SongEndEvent} so timing is always exact — no manual Bukkit-scheduler
- * timers that drift relative to the NBS playback tempo.
+ * NBS parsing is done async to avoid main-thread I/O lag. The RadioSongPlayer
+ * is then created and started on the main thread — NoteBlockAPI's internal
+ * scheduler integration is not thread-safe, and starting playback off-thread
+ * causes the stuttering / skipping symptom.
  */
 public class MusicManager implements Listener {
 
@@ -55,7 +55,6 @@ public class MusicManager implements Listener {
     @EventHandler
     public void onSongEnd(SongEndEvent event) {
         SongPlayer sp = event.getSongPlayer();
-        // Remove the entry whose value matches this SongPlayer
         activePlayers.values().remove(sp);
     }
 
@@ -64,10 +63,77 @@ public class MusicManager implements Listener {
     // -----------------------------------------------------------------
 
     /**
-     * Plays a song for a player. Stops any currently-playing song first.
-     *
-     * @return true if the song started successfully
+     * Parses the NBS file async, then starts playback on the main thread.
+     * This avoids both main-thread I/O lag and NoteBlockAPI thread-safety issues.
      */
+    public void playSongAsync(Player player, String filename, Runnable onSuccess, Runnable onFailure) {
+        File file = new File(songsFolder, filename);
+        if (!file.exists()) {
+            player.sendMessage("§cSong file not found: " + filename);
+            logger.warning("Song file missing: " + file.getAbsolutePath());
+            if (onFailure != null) onFailure.run();
+            return;
+        }
+
+        UUID uuid = player.getUniqueId();
+
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+            Song song;
+            try {
+                song = NBSDecoder.parse(file);
+            } catch (Exception e) {
+                logger.log(Level.WARNING, "Failed to parse .nbs file: " + filename, e);
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    player.sendMessage("§cFailed to load song: " + filename);
+                    if (onFailure != null) onFailure.run();
+                });
+                return;
+            }
+
+            if (song == null) {
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    player.sendMessage("§cFailed to parse song file: " + filename);
+                    if (onFailure != null) onFailure.run();
+                });
+                return;
+            }
+
+            // NoteBlockAPI must be started on the main thread
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                if (!player.isOnline()) return;
+
+                stopSongInternal(uuid);
+
+                RadioSongPlayer songPlayer;
+                try {
+                    songPlayer = new RadioSongPlayer(song, SoundCategory.MASTER);
+                    songPlayer.setAutoDestroy(true);
+                    songPlayer.setVolume(volume);
+                    songPlayer.addPlayer(player);
+                    songPlayer.setPlaying(true);
+                } catch (Exception e) {
+                    logger.log(Level.WARNING, "Failed to start song player for " + filename, e);
+                    player.sendMessage("§cFailed to start playback.");
+                    if (onFailure != null) onFailure.run();
+                    return;
+                }
+
+                activePlayers.put(uuid, songPlayer);
+                logger.info("Playing '" + filename + "' for " + player.getName()
+                        + " (" + song.getLength() + " NBS ticks, speed=" + song.getSpeed() + ")");
+                if (onSuccess != null) onSuccess.run();
+            });
+        });
+    }
+
+    /**
+     * Plays a song for a player. Stops any currently-playing song first.
+     * Parsing is async; playback starts on the main thread to avoid stuttering.
+     *
+     * @deprecated Use {@link #playSongAsync} for proper async/sync separation.
+     *             This method exists for backwards compatibility and blocks the caller thread.
+     */
+    @Deprecated
     public boolean playSong(Player player, String filename) {
         File file = new File(songsFolder, filename);
         if (!file.exists()) {

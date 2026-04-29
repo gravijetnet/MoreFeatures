@@ -114,35 +114,33 @@ public class RickrollCommand implements CommandExecutor, TabCompleter {
 
         // ---- play the song ----
         String rickrollFile = musicConfig.getRickrollFile();
-        boolean success = musicManager.playSong(target, rickrollFile);
-        if (!success) {
-            sender.sendMessage("§cRickroll song not available. "
-                    + "Make sure '" + rickrollFile + "' exists in the songs folder.");
-            return true;
-        }
+        final Player finalTarget = target;
+        final boolean finalTargetingOthers = targetingOthers;
+        final long finalStopAfterSeconds = stopAfterSeconds;
 
-        if (targetingOthers) {
-            sender.sendMessage("§aRickrolling " + target.getName() + "...");
-        } else if (!sender.equals(target)) {
-            // Console rickrolling someone
-            sender.sendMessage("§aRickrolling " + target.getName() + "...");
-        }
-        // When self-targeting, the song just starts — no message needed
+        musicManager.playSongAsync(finalTarget, rickrollFile,
+                () -> {
+                    if (finalTargetingOthers || !sender.equals(finalTarget)) {
+                        sender.sendMessage("§aRickrolling " + finalTarget.getName() + "...");
+                    }
 
-        // ---- schedule auto-stop if time limit is set ----
-        if (stopAfterSeconds > 0) {
-            long delayTicks = stopAfterSeconds * 20L; // seconds → ticks
-            Bukkit.getScheduler().runTaskLater(
-                    musicManager.getPlugin(),
-                    () -> {
-                        musicManager.stopSong(target);
-                        if (target.isOnline()) {
-                            target.sendMessage("§cThe rickroll has ended. (time limit reached)");
-                        }
-                    },
-                    delayTicks
-            );
-        }
+                    if (finalStopAfterSeconds > 0) {
+                        long delayTicks = finalStopAfterSeconds * 20L;
+                        Bukkit.getScheduler().runTaskLater(
+                                musicManager.getPlugin(),
+                                () -> {
+                                    musicManager.stopSong(finalTarget);
+                                    if (finalTarget.isOnline()) {
+                                        finalTarget.sendMessage("§cThe rickroll has ended. (time limit reached)");
+                                    }
+                                },
+                                delayTicks
+                        );
+                    }
+                },
+                () -> sender.sendMessage("§cRickroll song not available. "
+                        + "Make sure '" + rickrollFile + "' exists in the songs folder.")
+        );
 
         return true;
     }

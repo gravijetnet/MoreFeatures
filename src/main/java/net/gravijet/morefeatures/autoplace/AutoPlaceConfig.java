@@ -36,10 +36,37 @@ public class AutoPlaceConfig {
         return cfg.getBoolean("punishments.enabled", false);
     }
 
-    public String getAlertMessage(Player player) {
+    /**
+     * Minimum time (ms) allowed to place {@code PLACE_WINDOW_SIZE} (10) blocks.
+     * Default 400 ms → allows up to 25 blocks/s before flagging as FastPlace.
+     */
+    public long getFastPlaceWindowMs() {
+        return cfg.getLong("fastplace.window-ms", 400L);
+    }
+
+    /**
+     * Number of flags required before an alert fires.
+     * Reduces false-positive noise from lag spikes.
+     */
+    public int getFlagThreshold() {
+        return Math.max(1, cfg.getInt("flags.alert-threshold", 3));
+    }
+
+    /**
+     * Number of flags required before punishment is executed.
+     * Should be >= alert-threshold.
+     */
+    public int getPunishThreshold() {
+        return Math.max(getFlagThreshold(), cfg.getInt("flags.punish-threshold", 10));
+    }
+
+    public String getAlertMessage(Player player, String type, int flagCount) {
         String raw = cfg.getString("alerts.message",
-                "&c%player% has been flagged for AutoPlace!");
-        return ChatColor.translateAlternateColorCodes('&', applyPlaceholders(raw, player));
+                "&c[AutoPlace] %player% flagged for %type% (flags: %flags%)");
+        return ChatColor.translateAlternateColorCodes('&',
+                applyPlaceholders(raw, player)
+                        .replace("%type%", type)
+                        .replace("%flags%", String.valueOf(flagCount)));
     }
 
     public String getPunishmentCommand(Player player) {

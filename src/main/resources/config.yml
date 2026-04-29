@@ -10,7 +10,7 @@ phoenix-mysql:
 # Server-wide fullbright: forces all chunk sections to maximum sky/block light via NMS.
 # Toggle at runtime with /fullbright — requires morefeatures.fullbright (op).
 fullbright:
-  enabled: false
+  enabled: true
 
 # AutoPlace detection: catches clients automating block placements via packet inspection.
 # Detection settings (alerts, punishments, cancel) are in antiautoplace.yml.

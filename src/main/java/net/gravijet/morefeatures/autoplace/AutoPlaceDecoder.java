@@ -29,6 +29,9 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
     private static final double HEIGHT     = 1.8;
     private static final double HALF_WIDTH = 0.6 / 2.0;
 
+    // Size of the FastPlace sliding window (must match AutoPlaceConfig.getFastPlaceWindow())
+    private static final int PLACE_WINDOW_SIZE = 10;
+
     private static final Set<Material> INTERACTABLE_BLOCKS = EnumSet.of(
             Material.DISPENSER,
             Material.NOTE_BLOCK,
@@ -95,6 +98,13 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
     private BlockPosition requestedBlock = new BlockPosition(0, 0, 0);
     private final Location lastLocation;
     private boolean sentBlock = false;
+
+    // FastPlace detection: ring-buffer of the last PLACE_WINDOW_SIZE placement timestamps (ms)
+    private final long[] placeTimes = new long[PLACE_WINDOW_SIZE];
+    private int placeTimeIndex = 0;
+
+    // Flag accumulator — incremented on each violation, used to suppress noisy punishments
+    private int flags = 0;
 
     public AutoPlaceDecoder(Player player, JavaPlugin plugin, AutoPlaceConfig config) {
         this.player       = player;
@@ -191,7 +201,31 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
         // placement is geometrically impossible for a real client — skip
         if (isPlayerInsideBlock(shifted)) return true;
 
-        // ---- CORE DETECTION ----
+        // ---- FASTPLACE DETECTION ----
+        // Record this placement timestamp in the ring buffer.
+        long now = System.currentTimeMillis();
+        placeTimes[placeTimeIndex] = now;
+        placeTimeIndex = (placeTimeIndex + 1) % PLACE_WINDOW_SIZE;
+
+        // Oldest slot in the ring is the one we just overwrote — i.e. PLACE_WINDOW_SIZE placements ago.
+        long oldest = placeTimes[placeTimeIndex];
+        if (oldest != 0) {
+            long windowMs = now - oldest;
+            // config: minimum ms allowed for PLACE_WINDOW_SIZE blocks (default 400 ms → 25 blocks/s)
+            if (windowMs < config.getFastPlaceWindowMs()) {
+                flags++;
+                if (flags >= config.getFlagThreshold()) {
+                    handleDetection(worldServer, position, shifted, "FastPlace");
+                    if (config.shouldCancel()) {
+                        sendCancelPackets(worldServer, position, shifted);
+                        return false;
+                    }
+                }
+                return true;
+            }
+        }
+
+        // ---- AUTOPLACE DETECTION ----
         // First block-place packet since the last flying packet → mark and allow.
         // Second block-place packet without an intervening flying → AutoPlace detected.
         if (!sentBlock) {
@@ -199,14 +233,13 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
             return true;
         }
 
-        // --- AutoPlace detected ---
-        handleDetection(worldServer, position, shifted);
-
-        // Even when cancellation is on we return true here unless we actually send
-        // corrective packets; the corrective-send path returns false to swallow.
-        if (config.shouldCancel()) {
-            sendCancelPackets(worldServer, position, shifted);
-            return false;
+        flags++;
+        if (flags >= config.getFlagThreshold()) {
+            handleDetection(worldServer, position, shifted, "AutoPlace");
+            if (config.shouldCancel()) {
+                sendCancelPackets(worldServer, position, shifted);
+                return false;
+            }
         }
         return true;
     }
@@ -215,9 +248,10 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
     //  Detection response
     // -----------------------------------------------------------------
 
-    private void handleDetection(WorldServer worldServer, BlockPosition position, BlockPosition shifted) {
+    private void handleDetection(WorldServer worldServer, BlockPosition position,
+                                 BlockPosition shifted, String type) {
         if (config.shouldAlert()) {
-            String message = config.getAlertMessage(player);
+            String message = config.getAlertMessage(player, type, flags);
             for (Player online : Bukkit.getOnlinePlayers()) {
                 if (online.hasPermission("morefeatures.autoplace.alerts")) {
                     online.sendMessage(message);
@@ -226,7 +260,7 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
             Bukkit.getConsoleSender().sendMessage(message);
         }
 
-        if (config.shouldPunish()) {
+        if (config.shouldPunish() && flags >= config.getPunishThreshold()) {
             String command = config.getPunishmentCommand(player);
             Bukkit.getScheduler().runTask(plugin, () ->
                     Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command));

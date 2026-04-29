@@ -1,5 +1,5 @@
 # AntiAutoPlace detection configuration
-# Controls how the AutoPlace detection system responds to flagged players.
+# Controls how the AutoPlace/FastPlace detection system responds to flagged players.
 #
 # To toggle the feature on/off entirely, use config.yml → autoplace.enabled
 #
@@ -8,16 +8,29 @@
 #   morefeatures.autoplace.alerts  — receive staff alert messages   (default: op)
 
 # Cancel the offending placement and restore the block client-side.
-# Not required when punishments are enabled; disable for a slight speedup.
-cancel: false
+cancel: true
 
 alerts:
   enabled: true
-  # Placeholders: %player%, %uuid%
-  message: "&c[AutoPlace] &f%player% &7has been flagged for AutoPlace!"
+  # Placeholders: %player%, %uuid%, %type% (AutoPlace/FastPlace), %flags% (flag count)
+  message: "&caAnticheat &8» &f%player% &chas been flagged for AutoPlace!"
 
 punishments:
   enabled: false
-  # Console command to run when a player is flagged.
+  # Console command to run when a player reaches the punish-threshold.
   # Placeholders: %player%, %uuid%
-  command: "ban %player% 30d AutoPlace"
+  command: "tempban %player% 30d AutoPlace/FastPlace"
+
+# FastPlace detection: fires when a player places PLACE_WINDOW_SIZE (10) blocks
+# faster than window-ms milliseconds.
+# Default: 400ms → flags anything faster than 25 blocks/second.
+# Increase this if legitimate bridging is being flagged.
+fastplace:
+  window-ms: 200
+
+# Flag thresholds — violations accumulate per session.
+# alert-threshold:  minimum flags before staff alert is sent.
+# punish-threshold: minimum flags before punishment command runs.
+flags:
+  alert-threshold: 3
+  punish-threshold: 10
