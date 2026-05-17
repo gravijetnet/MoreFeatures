@@ -67,6 +67,11 @@ public class MusicManager implements Listener {
      * This avoids both main-thread I/O lag and NoteBlockAPI thread-safety issues.
      */
     public void playSongAsync(Player player, String filename, Runnable onSuccess, Runnable onFailure) {
+        if (!isSafeFilename(filename)) {
+            player.sendMessage("§cInvalid song name: " + filename);
+            if (onFailure != null) onFailure.run();
+            return;
+        }
         File file = new File(songsFolder, filename);
         if (!file.exists()) {
             player.sendMessage("§cSong file not found: " + filename);
@@ -135,6 +140,10 @@ public class MusicManager implements Listener {
      */
     @Deprecated
     public boolean playSong(Player player, String filename) {
+        if (!isSafeFilename(filename)) {
+            player.sendMessage("§cInvalid song name: " + filename);
+            return false;
+        }
         File file = new File(songsFolder, filename);
         if (!file.exists()) {
             player.sendMessage("§cSong file not found: " + filename);
@@ -232,6 +241,15 @@ public class MusicManager implements Listener {
     // -----------------------------------------------------------------
     //  Internals
     // -----------------------------------------------------------------
+
+    // Rejects path traversal — player-supplied names must be a plain file name
+    // directly inside the songs folder, never "../" or an absolute path.
+    private static boolean isSafeFilename(String name) {
+        if (name == null || name.isEmpty()) return false;
+        if (name.indexOf('/') >= 0 || name.indexOf('\\') >= 0) return false;
+        if (name.contains("..")) return false;
+        return new File(name).getName().equals(name);
+    }
 
     private void stopSongInternal(UUID uuid) {
         SongPlayer sp = activePlayers.remove(uuid);

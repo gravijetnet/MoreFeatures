@@ -25,6 +25,10 @@ public class AutoPlaceInjector {
     }
 
     public void inject(Player player) {
+        // Re-injecting (reload, or onEnable looping online players while a join
+        // fires) would otherwise throw "Duplicate handler name" — clear first.
+        uninject(player);
+
         AutoPlaceDecoder decoder = new AutoPlaceDecoder(player, plugin, config);
         decoders.put(player, decoder);
         getPipeline(player).addAfter("decoder", HANDLER_NAME, decoder);

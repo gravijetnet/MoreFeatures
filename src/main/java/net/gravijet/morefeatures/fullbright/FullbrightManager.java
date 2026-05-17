@@ -53,13 +53,17 @@ public class FullbrightManager {
         applyMaxLight(chunk);
     }
 
-    /** Called on plugin enable — processes every already-loaded chunk. */
+    /** Called on plugin enable / toggle — processes every already-loaded chunk. */
     public void relightAllLoaded() {
         int total = 0;
         for (World world : plugin.getServer().getWorlds()) {
             for (Chunk chunk : world.getLoadedChunks()) {
                 if (enabled) {
                     applyMaxLight(chunk);
+                } else {
+                    // Recompute real lighting — refreshChunk alone would just
+                    // resend the still-maxed in-memory light data.
+                    revertLight(chunk);
                 }
                 // Force the client to re-render the chunk
                 world.refreshChunk(chunk.getX(), chunk.getZ());
@@ -84,5 +88,10 @@ public class FullbrightManager {
                 section.a(new NibbleArray(MAX_LIGHT.clone())); // block-light
             }
         }
+    }
+
+    private static void revertLight(Chunk chunk) {
+        // initLighting() recomputes sky/block light from scratch for the chunk.
+        ((CraftChunk) chunk).getHandle().initLighting();
     }
 }

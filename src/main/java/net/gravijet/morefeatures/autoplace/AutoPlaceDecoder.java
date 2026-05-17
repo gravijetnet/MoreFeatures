@@ -106,6 +106,10 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
     // Flag accumulator — incremented on each violation, used to suppress noisy punishments
     private int flags = 0;
 
+    // One-shot guard: the punishment command must fire at most once per session,
+    // otherwise every subsequent placement packet re-dispatches it (ban/command spam).
+    private boolean punished = false;
+
     public AutoPlaceDecoder(Player player, JavaPlugin plugin, AutoPlaceConfig config) {
         this.player       = player;
         this.plugin       = plugin;
@@ -250,21 +254,33 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
 
     private void handleDetection(WorldServer worldServer, BlockPosition position,
                                  BlockPosition shifted, String type) {
-        if (config.shouldAlert()) {
-            String message = config.getAlertMessage(player, type, flags);
-            for (Player online : Bukkit.getOnlinePlayers()) {
-                if (online.hasPermission("morefeatures.autoplace.alerts")) {
-                    online.sendMessage(message);
-                }
-            }
-            Bukkit.getConsoleSender().sendMessage(message);
-        }
+        // Snapshot state on the Netty thread (the only thread that touches this
+        // decoder), then hand all Bukkit API work to the main thread.
+        final int flagSnapshot = flags;
+        final boolean doAlert  = config.shouldAlert();
+        final boolean doPunish = config.shouldPunish()
+                && flagSnapshot >= config.getPunishThreshold()
+                && !punished;
+        if (doPunish) punished = true; // one-shot — netty thread only, so safe
 
-        if (config.shouldPunish() && flags >= config.getPunishThreshold()) {
-            String command = config.getPunishmentCommand(player);
-            Bukkit.getScheduler().runTask(plugin, () ->
-                    Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command));
-        }
+        if (!doAlert && !doPunish) return;
+
+        final String message = doAlert  ? config.getAlertMessage(player, type, flagSnapshot) : null;
+        final String command = doPunish ? config.getPunishmentCommand(player)                : null;
+
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (message != null) {
+                for (Player online : Bukkit.getOnlinePlayers()) {
+                    if (online.hasPermission("morefeatures.autoplace.alerts")) {
+                        online.sendMessage(message);
+                    }
+                }
+                Bukkit.getConsoleSender().sendMessage(message);
+            }
+            if (command != null) {
+                Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
+            }
+        });
     }
 
     private void sendCancelPackets(WorldServer worldServer, BlockPosition position, BlockPosition shifted) {

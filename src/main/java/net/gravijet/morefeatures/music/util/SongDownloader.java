@@ -2,50 +2,23 @@ package net.gravijet.morefeatures.music.util;
 
 import net.gravijet.morefeatures.music.MusicConfig;
 
-import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.security.SecureRandom;
-import java.security.cert.X509Certificate;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
  * Downloads .nbs song files from configured URLs into the local songs folder.
- * Uses java.net.HttpURLConnection with trust-all SSL for broad compatibility.
+ * Uses java.net.HttpURLConnection with the JVM's default TLS trust store.
  */
 public class SongDownloader {
 
     private static final int CONNECT_TIMEOUT = 15_000;  // 15s
     private static final int READ_TIMEOUT    = 60_000;  // 60s
-
-    static {
-        // Accept all HTTPS certificates — safe for downloading public .nbs assets.
-        try {
-            TrustManager[] trustAll = new TrustManager[] {
-                new X509TrustManager() {
-                    public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
-                    public void checkClientTrusted(X509Certificate[] chain, String authType) { }
-                    public void checkServerTrusted(X509Certificate[] chain, String authType) { }
-                }
-            };
-            SSLContext sc = SSLContext.getInstance("TLS");
-            sc.init(null, trustAll, new SecureRandom());
-            HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory());
-            HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true);
-        } catch (Exception e) {
-            // If we can't install trust-all, downloads may fail for HTTPS URLs.
-            Logger.getLogger("MoreFeatures").log(Level.WARNING,
-                    "Could not install trust-all SSL context — HTTPS downloads may fail.", e);
-        }
-    }
 
     private final Logger logger;
     private final File songsFolder;
