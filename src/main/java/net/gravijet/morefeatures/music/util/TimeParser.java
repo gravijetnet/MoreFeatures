@@ -68,7 +68,10 @@ public final class TimeParser {
         try {
             return Long.parseLong(val);
         } catch (NumberFormatException e) {
-            return 0;
+            // BUG-38: overflow (e.g. 99999999999h) silently returned 0 before; now it throws
+            // a user-readable error instead of producing a silent wrong result
+            throw new IllegalArgumentException(
+                    "Time component too large to parse: '" + val + "'. Use smaller values.");
         }
     }
 }

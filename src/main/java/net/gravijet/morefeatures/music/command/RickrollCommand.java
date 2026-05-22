@@ -50,32 +50,34 @@ public class RickrollCommand implements CommandExecutor, TabCompleter {
             timeArg = null;
             targetingOthers = false;
         } else if (args.length == 1) {
-            // Could be /rickroll <player>  or  /rickroll <time>
-            // Try to parse as time first; if that fails, treat as player
-            boolean isTimeArg = false;
-            try {
-                TimeParser.parseSeconds(args[0]);
-                isTimeArg = true;
-            } catch (IllegalArgumentException ignored) {
-                // Not a valid time string — treat as player name
-            }
-
-            if (isTimeArg) {
-                if (!(sender instanceof Player)) {
-                    sender.sendMessage("§cConsole must specify a player: /rickroll <player> [time]");
-                    return true;
-                }
-                target = (Player) sender;
-                timeArg = args[0];
-                targetingOthers = false;
+            // BUG-35: prefer online-player lookup first; only fall back to time parsing if no
+            // player is found. This avoids the ambiguity where a player named "30s" would be
+            // treated as a duration instead of a player name.
+            Player found = Bukkit.getPlayer(args[0]);
+            if (found != null) {
+                target = found;
+                timeArg = null;
+                targetingOthers = !target.equals(sender);
             } else {
-                target = Bukkit.getPlayer(args[0]);
-                if (target == null) {
+                // No online player by that name — try to parse as a time string
+                boolean isTimeArg = false;
+                try {
+                    TimeParser.parseSeconds(args[0]);
+                    isTimeArg = true;
+                } catch (IllegalArgumentException ignored) {}
+
+                if (isTimeArg) {
+                    if (!(sender instanceof Player)) {
+                        sender.sendMessage("§cConsole must specify a player: /rickroll <player> [time]");
+                        return true;
+                    }
+                    target = (Player) sender;
+                    timeArg = args[0];
+                    targetingOthers = false;
+                } else {
                     sender.sendMessage("§cPlayer not found: " + args[0]);
                     return true;
                 }
-                timeArg = null;
-                targetingOthers = !target.equals(sender);
             }
         } else {
             // /rickroll <player> <time>
@@ -120,13 +122,16 @@ public class RickrollCommand implements CommandExecutor, TabCompleter {
 
         musicManager.playSongAsync(finalTarget, rickrollFile,
                 () -> {
-                    if (finalTargetingOthers || !sender.equals(finalTarget)) {
+                    if (finalTargetingOthers) {
                         sender.sendMessage("§aRickrolling " + finalTarget.getName() + "...");
                     }
 
                     if (finalStopAfterSeconds > 0) {
                         long delayTicks = finalStopAfterSeconds * 20L;
-                        Bukkit.getScheduler().runTaskLater(
+                        // BUG-36: register the task ID with MusicManager so it can be cancelled
+                        // if the song ends naturally before the timer fires, preventing the delayed
+                        // stop from killing whatever song the player is listening to next
+                        int taskId = Bukkit.getScheduler().runTaskLater(
                                 musicManager.getPlugin(),
                                 () -> {
                                     musicManager.stopSong(finalTarget);
@@ -135,7 +140,8 @@ public class RickrollCommand implements CommandExecutor, TabCompleter {
                                     }
                                 },
                                 delayTicks
-                        );
+                        ).getTaskId();
+                        musicManager.registerStopTask(finalTarget.getUniqueId(), taskId);
                     }
                 },
                 () -> sender.sendMessage("§cRickroll song not available. "

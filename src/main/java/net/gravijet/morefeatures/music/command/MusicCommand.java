@@ -198,12 +198,13 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
         }
 
         sender.sendMessage("§aStarting song download...");
+        org.bukkit.plugin.java.JavaPlugin plugin = musicManager.getPlugin();
         Bukkit.getScheduler().runTaskAsynchronously(
-                Bukkit.getPluginManager().getPlugin("MoreFeatures"),
+                plugin,
                 () -> {
                     int count = songDownloader.downloadMissing(musicConfig);
                     Bukkit.getScheduler().runTask(
-                            Bukkit.getPluginManager().getPlugin("MoreFeatures"),
+                            plugin,
                             () -> sender.sendMessage("§aDownload complete. "
                                     + count + " song(s) downloaded.")
                     );
@@ -228,10 +229,20 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
         if (sp == null) {
             sender.sendMessage("§7No song is currently playing for you.");
         } else {
-            String songTitle = sp.getSong().getTitle();
-            short length = sp.getSong().getLength();
-            sender.sendMessage("§aNow playing: " + songTitle
-                    + " (" + length + " ticks / " + (length / 20) + "s)");
+            com.xxmicloxx.NoteBlockAPI.model.Song song = sp.getSong();
+            if (song == null) {
+                sender.sendMessage("§7No song is currently playing for you.");
+            } else {
+                // BUG-39: song.getTitle() can be null for untitled NBS files
+                String songTitle = song.getTitle();
+                String displayTitle = (songTitle != null && !songTitle.isEmpty()) ? songTitle : "(untitled)";
+                // BUG-40: use song.getSpeed() (tempo) instead of hardcoded 20 ticks/s
+                short length = song.getLength();
+                float speed  = song.getSpeed();
+                int durationSeconds = speed > 0 ? (int) (length / speed) : 0;
+                sender.sendMessage("§aNow playing: " + displayTitle
+                        + " (" + length + " ticks / " + durationSeconds + "s)");
+            }
         }
         return true;
     }
@@ -327,8 +338,8 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
             return values;
         }
 
-        if (args.length == 2 && args[0].equalsIgnoreCase("play")
-                || args.length == 3 && args[0].equalsIgnoreCase("force")) {
+        if ((args.length == 2 && args[0].equalsIgnoreCase("play"))
+                || (args.length == 3 && args[0].equalsIgnoreCase("force"))) {
             // Suggest song filenames
             List<String> matches = new ArrayList<>();
             String prefix = args[args.length - 1].toLowerCase();

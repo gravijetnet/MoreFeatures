@@ -16,8 +16,9 @@ public class PunishmentListener implements Listener {
         this.plugin = plugin;
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPunishment(ProfilePunishmentEvent event) {
+        if (plugin.getDatabaseManager() == null) return; // BUG-14: sync may be disabled
         PunishmentType type = event.getPunishment().getPunishmentType();
 
         String statKey;

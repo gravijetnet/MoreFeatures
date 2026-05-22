@@ -43,26 +43,34 @@ public class SongDownloader {
 
         int downloaded = 0;
         for (MusicConfig.SongEntry entry : config.getSongs()) {
-            File target = new File(songsFolder, entry.getFilename());
+            String filename = entry.getFilename();
+
+            // BUG-33: validate filename to prevent path traversal attacks
+            if (!isSafeFilename(filename)) {
+                logger.warning("Skipping song with unsafe filename: " + filename);
+                continue;
+            }
+
+            File target = new File(songsFolder, filename);
             if (target.exists()) {
-                logger.fine("Song already exists, skipping: " + entry.getFilename());
+                logger.fine("Song already exists, skipping: " + filename);
                 continue;
             }
 
             String url = entry.getUrl();
-            logger.info("Downloading song: " + entry.getFilename() + " from " + url);
+            logger.info("Downloading song: " + filename + " from " + url);
 
+            // BUG-34: use try/finally to ensure partial file is cleaned up even on non-IOException
             try {
                 downloadFile(url, target);
                 downloaded++;
-                logger.info("Downloaded song: " + entry.getFilename() + " (" + target.length() + " bytes)");
-            } catch (IOException e) {
+                logger.info("Downloaded song: " + filename + " (" + target.length() + " bytes)");
+            } catch (Exception e) {
                 logger.log(Level.WARNING,
-                        "Failed to download song '" + entry.getFilename() + "' from " + url
+                        "Failed to download song '" + filename + "' from " + url
                         + " — " + e.getMessage());
-                // Clean up partial file if download failed
-                if (target.exists()) {
-                    target.delete();
+                if (target.exists() && !target.delete()) {
+                    logger.warning("Could not delete partial download: " + target.getAbsolutePath());
                 }
             }
         }
@@ -70,37 +78,53 @@ public class SongDownloader {
         return downloaded;
     }
 
+    // BUG-33: same safe-filename logic as MusicManager to prevent path traversal on download
+    private static boolean isSafeFilename(String name) {
+        if (name == null || name.isEmpty()) return false;
+        if (name.indexOf('/') >= 0 || name.indexOf('\\') >= 0) return false;
+        if (name.contains("..")) return false;
+        return new File(name).getName().equals(name);
+    }
+
     /**
      * Downloads a single file from a URL to a local file.
+     * Only http:// and https:// URLs are permitted. Redirects are disabled to prevent SSRF.
      */
     private void downloadFile(String urlString, File destination) throws IOException {
+        if (!urlString.startsWith("http://") && !urlString.startsWith("https://")) {
+            throw new IOException("Rejected non-HTTP URL (only http/https allowed): " + urlString);
+        }
         URL url = new URL(urlString);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setConnectTimeout(CONNECT_TIMEOUT);
         conn.setReadTimeout(READ_TIMEOUT);
         conn.setRequestProperty("User-Agent", "MoreFeatures-Plugin/1.0");
-        conn.setInstanceFollowRedirects(true);
+        // BUG-32: disabled redirect following to prevent SSRF; attacker-controlled URLs
+        // could redirect to internal network addresses
+        conn.setInstanceFollowRedirects(false);
 
-        int responseCode;
         try {
-            responseCode = conn.getResponseCode();
-        } catch (IOException e) {
-            throw new IOException("Could not reach server (connection or SSL error): " + e.getMessage(), e);
-        }
-
-        if (responseCode != HttpURLConnection.HTTP_OK) {
-            throw new IOException("Server returned HTTP " + responseCode);
-        }
-
-        try (InputStream in = conn.getInputStream();
-             FileOutputStream out = new FileOutputStream(destination)) {
-
-            byte[] buffer = new byte[8192];
-            int bytesRead;
-            while ((bytesRead = in.read(buffer)) != -1) {
-                out.write(buffer, 0, bytesRead);
+            int responseCode;
+            try {
+                responseCode = conn.getResponseCode();
+            } catch (IOException e) {
+                throw new IOException("Could not reach server (connection or SSL error): " + e.getMessage(), e);
             }
-            out.flush();
+
+            if (responseCode != HttpURLConnection.HTTP_OK) {
+                throw new IOException("Server returned HTTP " + responseCode);
+            }
+
+            try (InputStream in = conn.getInputStream();
+                 FileOutputStream out = new FileOutputStream(destination)) {
+
+                byte[] buffer = new byte[8192];
+                int bytesRead;
+                while ((bytesRead = in.read(buffer)) != -1) {
+                    out.write(buffer, 0, bytesRead);
+                }
+                out.flush();
+            }
         } finally {
             conn.disconnect();
         }

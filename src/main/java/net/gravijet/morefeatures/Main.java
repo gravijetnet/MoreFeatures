@@ -93,21 +93,23 @@ public class Main extends JavaPlugin {
         playtimeSync = new PlaytimeSync(this, databaseManager);
         networkStatsSync = new NetworkStatsSync(databaseManager);
 
-        getServer().getScheduler().runTaskAsynchronously(this, this::initPunishmentCounts);
-
         getServer().getPluginManager().registerEvents(new PlayerListener(this),    this);
         getServer().getPluginManager().registerEvents(new PunishmentListener(this), this);
         getServer().getPluginManager().registerEvents(new RankListener(this),      this);
+
+        // BUG-02: initialise syncTask before starting per-player timers so the ordering is clear
+        syncTask = new SyncTask(this);
+        long syncInterval = Math.max(20L, bridgeConfig.getSyncIntervalTicks());
+        syncTask.runTaskTimerAsynchronously(this, 100L, syncInterval);
 
         for (Player player : getServer().getOnlinePlayers()) {
             startPlaytimeTimer(player.getUniqueId());
         }
 
-        syncTask = new SyncTask(this);
-        syncTask.runTaskTimerAsynchronously(this, 100L, bridgeConfig.getSyncIntervalTicks());
+        getServer().getScheduler().runTaskAsynchronously(this, this::initPunishmentCounts);
 
         getLogger().info("Phoenix→MySQL sync enabled — network stats synced every "
-                + (bridgeConfig.getSyncIntervalTicks() / 20) + " seconds.");
+                + (syncInterval / 20) + " seconds.");
 
     }
 
@@ -121,6 +123,9 @@ public class Main extends JavaPlugin {
         }
         playtimeTasks.values().forEach(id -> getServer().getScheduler().cancelTask(id));
         playtimeTasks.clear();
+        // BUG-04: cancel ALL async tasks for this plugin before closing the pool so inflight
+        // DB writes don't race against pool shutdown
+        getServer().getScheduler().cancelTasks(this);
         if (databaseManager != null) {
             databaseManager.close();
         }
@@ -136,8 +141,13 @@ public class Main extends JavaPlugin {
         fullbrightManager = new FullbrightManager(this, fbEnabled);
 
         FullbrightCommand fbCmd = new FullbrightCommand(fullbrightManager);
-        getCommand("fullbright").setExecutor(fbCmd);
-        getCommand("fullbright").setTabCompleter(fbCmd);
+        org.bukkit.command.PluginCommand fbCommand = getCommand("fullbright");
+        if (fbCommand != null) {
+            fbCommand.setExecutor(fbCmd);
+            fbCommand.setTabCompleter(fbCmd);
+        } else {
+            getLogger().severe("Command 'fullbright' not registered in plugin.yml — fullbright command unavailable.");
+        }
         getServer().getPluginManager().registerEvents(new FullbrightListener(fullbrightManager), this);
 
         if (fbEnabled) {
@@ -184,12 +194,22 @@ public class Main extends JavaPlugin {
         musicManager = new MusicManager(this, songsFolder, musicConfig.getVolume());
 
         MusicCommand musicCmd = new MusicCommand(musicManager, songDownloader, musicConfig);
-        getCommand("music").setExecutor(musicCmd);
-        getCommand("music").setTabCompleter(musicCmd);
+        org.bukkit.command.PluginCommand musicCommand = getCommand("music");
+        if (musicCommand != null) {
+            musicCommand.setExecutor(musicCmd);
+            musicCommand.setTabCompleter(musicCmd);
+        } else {
+            getLogger().severe("Command 'music' not registered in plugin.yml — music command unavailable.");
+        }
 
         RickrollCommand rickrollCmd = new RickrollCommand(musicManager, musicConfig);
-        getCommand("rickroll").setExecutor(rickrollCmd);
-        getCommand("rickroll").setTabCompleter(rickrollCmd);
+        org.bukkit.command.PluginCommand rickrollCommand = getCommand("rickroll");
+        if (rickrollCommand != null) {
+            rickrollCommand.setExecutor(rickrollCmd);
+            rickrollCommand.setTabCompleter(rickrollCmd);
+        } else {
+            getLogger().severe("Command 'rickroll' not registered in plugin.yml — rickroll command unavailable.");
+        }
 
         getServer().getPluginManager().registerEvents(new MusicListener(musicManager), this);
 
@@ -216,8 +236,14 @@ public class Main extends JavaPlugin {
         }
 
         sender.sendMessage("§aBridge: running immediate sync...");
+        // BUG-01: call syncNetworkStats directly rather than creating a throw-away BukkitRunnable
+        // (BukkitRunnable.run() called outside the scheduler leaks scheduler state and allows
+        // concurrent races if the command is spammed)
         getServer().getScheduler().runTaskAsynchronously(this, () -> {
-            new SyncTask(this).run();
+            Phoenix phoenix = Phoenix.getInstance();
+            if (phoenix != null && phoenix.isApiEnabled()) {
+                syncNetworkStats(phoenix);
+            }
             sender.sendMessage("§aSync complete.");
         });
         return true;
@@ -262,7 +288,7 @@ public class Main extends JavaPlugin {
         Long existingMutes = databaseManager.getStatValue("total_mutes");
         Long existingKicks = databaseManager.getStatValue("total_kicks");
 
-        if (existingBans != null || existingMutes != null || existingKicks != null) return;
+        if (existingBans != null && existingMutes != null && existingKicks != null) return;
 
         Phoenix phoenix = Phoenix.getInstance();
         if (phoenix == null || !phoenix.isApiEnabled()) {
@@ -274,6 +300,9 @@ public class Main extends JavaPlugin {
 
         phoenix.getPunishmentHandler().getAllPunishments()
                 .thenAccept((List<IPunishment> punishments) -> {
+                    // BUG-03: plugin may have been disabled while this future was pending;
+                    // check the manager is still open before writing
+                    if (databaseManager == null) return;
                     long bans = 0, mutes = 0, kicks = 0;
                     for (IPunishment p : punishments) {
                         PunishmentType type = p.getPunishmentType();

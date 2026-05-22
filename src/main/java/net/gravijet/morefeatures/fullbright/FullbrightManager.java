@@ -53,27 +53,40 @@ public class FullbrightManager {
         applyMaxLight(chunk);
     }
 
-    /** Called on plugin enable / toggle — processes every already-loaded chunk. */
+    private static final int CHUNKS_PER_TICK = 20; // BUG-41: process in batches to avoid freezing
+
+    /** Called on plugin enable / toggle — processes every already-loaded chunk in batches. */
     public void relightAllLoaded() {
-        int total = 0;
+        // BUG-41: collecting all chunks up front (main thread) then scheduling batched processing
+        // so no single tick processes more than CHUNKS_PER_TICK chunks
+        java.util.List<Chunk> toProcess = new java.util.ArrayList<>();
         for (World world : plugin.getServer().getWorlds()) {
-            for (Chunk chunk : world.getLoadedChunks()) {
-                if (enabled) {
-                    applyMaxLight(chunk);
-                } else {
-                    // Recompute real lighting — refreshChunk alone would just
-                    // resend the still-maxed in-memory light data.
-                    revertLight(chunk);
-                }
-                // Force the client to re-render the chunk
-                world.refreshChunk(chunk.getX(), chunk.getZ());
-                total++;
-            }
+            toProcess.addAll(java.util.Arrays.asList(world.getLoadedChunks()));
         }
-        if (total > 0) {
-            logger.info("Fullbright " + (enabled ? "enabled" : "disabled")
+
+        if (toProcess.isEmpty()) return;
+        final boolean snap = enabled;
+        scheduleBatch(toProcess, 0, snap, toProcess.size());
+    }
+
+    private void scheduleBatch(java.util.List<Chunk> chunks, int offset, boolean lightEnabled, int total) {
+        if (offset >= chunks.size()) {
+            logger.info("Fullbright " + (lightEnabled ? "enabled" : "disabled")
                     + " — refreshed " + total + " loaded chunk(s).");
+            return;
         }
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            int end = Math.min(offset + CHUNKS_PER_TICK, chunks.size());
+            for (int i = offset; i < end; i++) {
+                Chunk chunk = chunks.get(i);
+                if (chunk.isLoaded()) {
+                    if (lightEnabled) applyMaxLight(chunk);
+                    else revertLight(chunk);
+                    chunk.getWorld().refreshChunk(chunk.getX(), chunk.getZ());
+                }
+            }
+            scheduleBatch(chunks, end, lightEnabled, total);
+        });
     }
 
     // -----------------------------------------------------------------

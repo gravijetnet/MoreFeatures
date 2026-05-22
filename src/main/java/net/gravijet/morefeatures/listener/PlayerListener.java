@@ -30,6 +30,9 @@ public class PlayerListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onNetworkJoin(ProfileNetworkJoinEvent event) {
+        // BUG-10: guard against null databaseManager (sync disabled)
+        if (plugin.getDatabaseManager() == null) return;
+
         UUID uuid = event.getUuid();
 
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
@@ -72,25 +75,20 @@ public class PlayerListener implements Listener {
         });
 
         plugin.cancelPlaytimeTimer(uuid);
-
-        plugin.getServer().getScheduler().runTaskLaterAsynchronously(plugin, () -> {
-            Phoenix phoenix = Phoenix.getInstance();
-            if (phoenix != null && phoenix.isApiEnabled()) plugin.syncNetworkStats(phoenix);
-        }, 5L);
+        // BUG-12: network-stats sync on quit is handled solely by onNetworkLeave to avoid double-write
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onNetworkLeave(ProfileNetworkLeaveEvent event) {
+        if (plugin.getDatabaseManager() == null) return; // BUG-10: sync may be disabled
+
         UUID uuid = event.getUuid();
 
         plugin.getServer().getScheduler().runTaskLaterAsynchronously(plugin, () -> {
-            Phoenix phoenix = Phoenix.getInstance();
-            if (phoenix == null || !phoenix.isApiEnabled()) {
-                plugin.getDatabaseManager().setPlayerOnline(uuid.toString(), false);
-                return;
-            }
+            // BUG-13: deduplicated — setPlayerOnline is called once, then stats are synced if possible
             plugin.getDatabaseManager().setPlayerOnline(uuid.toString(), false);
-            plugin.syncNetworkStats(phoenix);
+            Phoenix phoenix = Phoenix.getInstance();
+            if (phoenix != null && phoenix.isApiEnabled()) plugin.syncNetworkStats(phoenix);
         }, 5L);
     }
 
@@ -106,7 +104,9 @@ public class PlayerListener implements Listener {
                 }
                 return new Timestamp(min);
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("MoreFeatures")
+                    .log(java.util.logging.Level.WARNING, "Could not fetch logins for " + uuid + " — using current time as first_seen", e);
         }
         return new Timestamp(System.currentTimeMillis());
     }

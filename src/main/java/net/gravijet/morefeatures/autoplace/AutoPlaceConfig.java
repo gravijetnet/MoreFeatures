@@ -3,7 +3,6 @@ package net.gravijet.morefeatures.autoplace;
 import org.bukkit.ChatColor;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
@@ -60,23 +59,28 @@ public class AutoPlaceConfig {
         return Math.max(getFlagThreshold(), cfg.getInt("flags.punish-threshold", 10));
     }
 
-    public String getAlertMessage(Player player, String type, int flagCount) {
+    public String getAlertMessage(String playerName, String playerUuid, String type, int flagCount) {
         String raw = cfg.getString("alerts.message",
                 "&c[AutoPlace] %player% flagged for %type% (flags: %flags%)");
         return ChatColor.translateAlternateColorCodes('&',
-                applyPlaceholders(raw, player)
+                applyPlaceholders(raw, playerName, playerUuid)
                         .replace("%type%", type)
                         .replace("%flags%", String.valueOf(flagCount)));
     }
 
-    public String getPunishmentCommand(Player player) {
+    public String getPunishmentCommand(String playerName, String playerUuid) {
         String raw = cfg.getString("punishments.command",
                 "ban %player% 30d AutoPlace");
-        return applyPlaceholders(raw, player);
+        return applyPlaceholders(raw, playerName, playerUuid);
     }
 
-    private static String applyPlaceholders(String s, Player player) {
-        return s.replace("%player%", player.getName())
-                .replace("%uuid%", player.getUniqueId().toString());
+    private static String applyPlaceholders(String s, String playerName, String playerUuid) {
+        // Strip characters that could break or inject into a dispatched command.
+        // Player names on vanilla are [a-zA-Z0-9_], but proxy/plugin setups may be looser.
+        String safeName = playerName.replaceAll("[^a-zA-Z0-9_]", "_");
+        // BUG-25: substitute %uuid% first so that a crafted player name containing "%uuid%"
+        // cannot cause double-substitution (safeName already strips %, but ordering is now correct)
+        return s.replace("%uuid%", playerUuid)
+                .replace("%player%", safeName);
     }
 }

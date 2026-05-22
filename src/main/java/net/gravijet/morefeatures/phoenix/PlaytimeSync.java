@@ -63,9 +63,11 @@ public class PlaytimeSync {
         if (logins == null || logins.isEmpty()) return;
 
         long playtimeMs = profile.getPlayTime(logins);
-        if (playtimeMs <= 0) return; // still 0 → login record not finalised yet, skip
+        if (playtimeMs < 0) return; // negative means data not available yet
 
-        int playtimeSeconds = (int) (playtimeMs / 1000L);
+        // BUG-17: allow zero playtime — skipping it leaves the DB column NULL for new players
+        // BUG-16: getPlayTime returns milliseconds; divide by 1000 to get seconds
+        long playtimeSeconds = playtimeMs / 1000L;
         databaseManager.updatePlayerPlaytime(uuid.toString(), playtimeSeconds);
     }
 }

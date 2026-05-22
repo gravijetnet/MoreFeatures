@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -38,6 +39,8 @@ public class MusicManager implements Listener {
     private volatile byte volume;
 
     private final Map<UUID, SongPlayer> activePlayers = new ConcurrentHashMap<>();
+    // BUG-36: tracks pending auto-stop task IDs so they can be cancelled if the song ends early
+    private final Map<UUID, Integer> stopTasks = new ConcurrentHashMap<>();
 
     public MusicManager(JavaPlugin plugin, File songsFolder, byte volume) {
         this.plugin = plugin;
@@ -55,7 +58,15 @@ public class MusicManager implements Listener {
     @EventHandler
     public void onSongEnd(SongEndEvent event) {
         SongPlayer sp = event.getSongPlayer();
-        activePlayers.values().remove(sp);
+        // BUG-27: use .equals() instead of == in case NoteBlockAPI wraps the instance
+        activePlayers.entrySet().removeIf(entry -> {
+            if (entry.getValue().equals(sp)) {
+                // BUG-36: cancel any pending auto-stop task for this player when the song ends naturally
+                cancelStopTask(entry.getKey());
+                return true;
+            }
+            return false;
+        });
     }
 
     // -----------------------------------------------------------------
@@ -107,8 +118,6 @@ public class MusicManager implements Listener {
             plugin.getServer().getScheduler().runTask(plugin, () -> {
                 if (!player.isOnline()) return;
 
-                stopSongInternal(uuid);
-
                 RadioSongPlayer songPlayer;
                 try {
                     songPlayer = new RadioSongPlayer(song, SoundCategory.MASTER);
@@ -123,7 +132,15 @@ public class MusicManager implements Listener {
                     return;
                 }
 
-                activePlayers.put(uuid, songPlayer);
+                // BUG-30: stop the old song and atomically replace it; if two concurrent
+                // playSongAsync calls race to this point the compute() is atomic so only one wins
+                activePlayers.compute(uuid, (id, existing) -> {
+                    if (existing != null) {
+                        try { existing.setPlaying(false); existing.destroy(); }
+                        catch (Exception ignored) {}
+                    }
+                    return songPlayer;
+                });
                 logger.info("Playing '" + filename + "' for " + player.getName()
                         + " (" + song.getLength() + " NBS ticks, speed=" + song.getSpeed() + ")");
                 if (onSuccess != null) onSuccess.run();
@@ -131,69 +148,29 @@ public class MusicManager implements Listener {
         });
     }
 
-    /**
-     * Plays a song for a player. Stops any currently-playing song first.
-     * Parsing is async; playback starts on the main thread to avoid stuttering.
-     *
-     * @deprecated Use {@link #playSongAsync} for proper async/sync separation.
-     *             This method exists for backwards compatibility and blocks the caller thread.
-     */
-    @Deprecated
-    public boolean playSong(Player player, String filename) {
-        if (!isSafeFilename(filename)) {
-            player.sendMessage("§cInvalid song name: " + filename);
-            return false;
-        }
-        File file = new File(songsFolder, filename);
-        if (!file.exists()) {
-            player.sendMessage("§cSong file not found: " + filename);
-            logger.warning("Song file missing: " + file.getAbsolutePath());
-            return false;
-        }
-
-        Song song;
-        try {
-            song = NBSDecoder.parse(file);
-        } catch (Exception e) {
-            logger.log(Level.WARNING, "Failed to parse .nbs file: " + filename, e);
-            player.sendMessage("§cFailed to load song: " + filename);
-            return false;
-        }
-
-        if (song == null) {
-            player.sendMessage("§cFailed to parse song file: " + filename);
-            return false;
-        }
-
-        stopSongInternal(player.getUniqueId());
-
-        RadioSongPlayer songPlayer;
-        try {
-            songPlayer = new RadioSongPlayer(song, SoundCategory.MASTER);
-            songPlayer.setAutoDestroy(true);
-            songPlayer.setVolume(volume);
-            songPlayer.addPlayer(player);
-            songPlayer.setPlaying(true);
-        } catch (Exception e) {
-            logger.log(Level.WARNING, "Failed to start song player for " + filename, e);
-            player.sendMessage("§cFailed to start playback.");
-            return false;
-        }
-
-        activePlayers.put(player.getUniqueId(), songPlayer);
-
-        logger.info("Playing '" + filename + "' for " + player.getName()
-                + " (" + song.getLength() + " NBS ticks, speed=" + song.getSpeed() + ")");
-        return true;
+    public void stopSong(Player player) {
+        UUID uuid = player.getUniqueId();
+        cancelStopTask(uuid); // BUG-36: cancel any pending auto-stop before stopping
+        stopSongInternal(uuid);
     }
 
-    public void stopSong(Player player) {
-        stopSongInternal(player.getUniqueId());
+    /** Registers a scheduled stop task so it can be cancelled if the song ends naturally. */
+    public void registerStopTask(UUID uuid, int taskId) {
+        cancelStopTask(uuid); // replace any existing stop task
+        stopTasks.put(uuid, taskId);
+    }
+
+    private void cancelStopTask(UUID uuid) {
+        Integer taskId = stopTasks.remove(uuid);
+        if (taskId != null) {
+            plugin.getServer().getScheduler().cancelTask(taskId);
+        }
     }
 
     public void stopAll() {
         List<UUID> uuids = new ArrayList<>(activePlayers.keySet());
         for (UUID uuid : uuids) {
+            cancelStopTask(uuid); // BUG-36: clear any pending auto-stop tasks
             stopSongInternal(uuid);
         }
         logger.info("Stopped all active songs (" + uuids.size() + " player(s)).");
@@ -219,7 +196,8 @@ public class MusicManager implements Listener {
     public String getRandomSong() {
         List<String> songs = getAvailableSongs();
         if (songs.isEmpty()) return null;
-        return songs.get((int) (Math.random() * songs.size()));
+        // BUG-28: ThreadLocalRandom avoids the synchronised shared Random in Math.random()
+        return songs.get(ThreadLocalRandom.current().nextInt(songs.size()));
     }
 
     public void setVolume(byte v) {

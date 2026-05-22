@@ -12,7 +12,8 @@ import java.util.logging.Logger;
 
 public class DatabaseManager {
 
-    private static final ZoneId VIENNA = ZoneId.of("Europe/Vienna");
+    // BUG-07: use UTC so timestamps are timezone-neutral across deployments
+    private static final ZoneId STORE_ZONE = ZoneId.of("UTC");
 
     // -------------------------------------------------------------------------
     // DDL
@@ -23,7 +24,7 @@ public class DatabaseManager {
             + "  `uuid`       VARCHAR(36)  NOT NULL,"
             + "  `name`       VARCHAR(100) NOT NULL,"
             + "  `rank`       VARCHAR(100),"
-            + "  `playtime`   INT,"
+            + "  `playtime`   BIGINT,"
             + "  `online`     BOOLEAN,"
             + "  `first_seen` DATETIME,"
             + "  `last_seen`  DATETIME,"
@@ -158,11 +159,11 @@ public class DatabaseManager {
         }
     }
 
-    public void updatePlayerPlaytime(String uuid, int playtime) {
+    public void updatePlayerPlaytime(String uuid, long playtime) {
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(UPDATE_PLAYER_PLAYTIME)) {
 
-            ps.setInt(1, playtime);
+            ps.setLong(1, playtime);
             ps.setTimestamp(2, now());
             ps.setString(3, uuid);
             ps.executeUpdate();
@@ -203,14 +204,15 @@ public class DatabaseManager {
     // -------------------------------------------------------------------------
 
     public Long getStatValue(String key) {
-        String col = keyToColumn(key);
-        String sql = "SELECT `" + col + "` FROM `network_stats` WHERE `id` = 1;";
+        keyToColumn(key); // validate key — throws if unknown
+        String sql = GET_STAT_SQL.get(key);
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(sql);
              ResultSet rs = ps.executeQuery()) {
 
             if (rs.next()) {
-                long val = rs.getLong(col);
+                // BUG-05: use column index 1 — avoids driver case-sensitivity issues with column names
+                long val = rs.getLong(1);
                 return rs.wasNull() ? null : val;
             }
             return null;
@@ -222,8 +224,9 @@ public class DatabaseManager {
     }
 
     public void updateStat(String key, long value) {
-        String col = keyToColumn(key);
-        String sql = "UPDATE `network_stats` SET `" + col + "` = ? WHERE `id` = 1;";
+        keyToColumn(key); // validate key
+        // BUG-06: use pre-built SQL constant so prepared-statement cache can reuse it
+        String sql = UPDATE_STAT_SQL.get(key);
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
 
@@ -236,8 +239,9 @@ public class DatabaseManager {
     }
 
     public void incrementStat(String key, long amount) {
-        String col = keyToColumn(key);
-        String sql = "UPDATE `network_stats` SET `" + col + "` = COALESCE(`" + col + "`, 0) + ? WHERE `id` = 1;";
+        keyToColumn(key); // validate key
+        // BUG-06: use pre-built SQL constant
+        String sql = INCREMENT_STAT_SQL.get(key);
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
 
@@ -261,6 +265,26 @@ public class DatabaseManager {
         } catch (SQLException e) {
             logger.log(Level.WARNING, "Failed to update network stats", e);
         }
+    }
+
+    private static final java.util.Map<String, String> GET_STAT_SQL;
+    private static final java.util.Map<String, String> UPDATE_STAT_SQL;
+    private static final java.util.Map<String, String> INCREMENT_STAT_SQL;
+
+    static {
+        String[] cols = {"total_players", "total_bans", "total_mutes",
+                         "total_kicks", "peak_online", "current_online"};
+        java.util.Map<String, String> get  = new java.util.HashMap<>();
+        java.util.Map<String, String> upd  = new java.util.HashMap<>();
+        java.util.Map<String, String> incr = new java.util.HashMap<>();
+        for (String c : cols) {
+            get.put(c,  "SELECT `" + c + "` FROM `network_stats` WHERE `id` = 1;");
+            upd.put(c,  "UPDATE `network_stats` SET `" + c + "` = ? WHERE `id` = 1;");
+            incr.put(c, "UPDATE `network_stats` SET `" + c + "` = COALESCE(`" + c + "`, 0) + ? WHERE `id` = 1;");
+        }
+        GET_STAT_SQL      = java.util.Collections.unmodifiableMap(get);
+        UPDATE_STAT_SQL   = java.util.Collections.unmodifiableMap(upd);
+        INCREMENT_STAT_SQL = java.util.Collections.unmodifiableMap(incr);
     }
 
     // Whitelist to prevent any possibility of SQL injection via key strings
@@ -289,6 +313,7 @@ public class DatabaseManager {
     }
 
     private static Timestamp now() {
-        return Timestamp.valueOf(LocalDateTime.now(VIENNA));
+        // BUG-07: store in UTC so timestamps are consistent regardless of server timezone
+        return Timestamp.valueOf(LocalDateTime.now(STORE_ZONE));
     }
 }
