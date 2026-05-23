@@ -10,10 +10,21 @@ import java.io.File;
 /**
  * Reads AutoPlace detection settings from antiautoplace.yml.
  * The enabled flag lives in config.yml and is checked by Main before this class is used.
+ *
+ * All numeric/boolean settings are cached as final fields at construction time so that
+ * repeated reads on the hot Netty I/O thread do not pay YamlConfiguration map-lookup
+ * overhead on every block-place packet.
  */
 public class AutoPlaceConfig {
 
     private final FileConfiguration cfg;
+
+    private final boolean cancel;
+    private final boolean alertEnabled;
+    private final boolean punishEnabled;
+    private final long    fastPlaceWindowMs;
+    private final int     flagThreshold;
+    private final int     punishThreshold;
 
     public AutoPlaceConfig(JavaPlugin plugin) {
         File file = new File(plugin.getDataFolder(), "antiautoplace.yml");
@@ -21,18 +32,26 @@ public class AutoPlaceConfig {
             plugin.saveResource("antiautoplace.yml", false);
         }
         this.cfg = YamlConfiguration.loadConfiguration(file);
+
+        this.cancel           = cfg.getBoolean("cancel", false);
+        this.alertEnabled     = cfg.getBoolean("alerts.enabled", true);
+        this.punishEnabled    = cfg.getBoolean("punishments.enabled", false);
+        this.fastPlaceWindowMs = cfg.getLong("fastplace.window-ms", 200L);
+        int rawFlag = Math.max(1, cfg.getInt("flags.alert-threshold", 3));
+        this.flagThreshold    = rawFlag;
+        this.punishThreshold  = Math.max(rawFlag, cfg.getInt("flags.punish-threshold", 10));
     }
 
     public boolean shouldCancel() {
-        return cfg.getBoolean("cancel", false);
+        return cancel;
     }
 
     public boolean shouldAlert() {
-        return cfg.getBoolean("alerts.enabled", true);
+        return alertEnabled;
     }
 
     public boolean shouldPunish() {
-        return cfg.getBoolean("punishments.enabled", false);
+        return punishEnabled;
     }
 
     /**
@@ -40,7 +59,7 @@ public class AutoPlaceConfig {
      * Default 200 ms → allows up to 50 blocks/s before flagging as FastPlace.
      */
     public long getFastPlaceWindowMs() {
-        return cfg.getLong("fastplace.window-ms", 200L);
+        return fastPlaceWindowMs;
     }
 
     /**
@@ -48,7 +67,7 @@ public class AutoPlaceConfig {
      * Reduces false-positive noise from lag spikes.
      */
     public int getFlagThreshold() {
-        return Math.max(1, cfg.getInt("flags.alert-threshold", 3));
+        return flagThreshold;
     }
 
     /**
@@ -56,7 +75,7 @@ public class AutoPlaceConfig {
      * Should be >= alert-threshold.
      */
     public int getPunishThreshold() {
-        return Math.max(getFlagThreshold(), cfg.getInt("flags.punish-threshold", 10));
+        return punishThreshold;
     }
 
     public String getAlertMessage(String playerName, String playerUuid, String type, int flagCount) {

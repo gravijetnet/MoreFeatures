@@ -88,8 +88,12 @@ public class PlayerListener implements Listener {
         // BUG-28 fix: increased delay from 5 to 40 ticks (2 s) to survive heavy-load
         // ticks. The task is registered with the plugin so onDisable()'s cancelTasks()
         // will kill it before the DB pool is closed, preventing a write-after-close.
+        // Guard against rapid rejoin: if the same UUID reconnects within the 40-tick
+        // window, Bukkit will have a Player object for them again — skip the offline
+        // update so we don't overwrite the online=true set by their rejoin.
         plugin.getServer().getScheduler().runTaskLaterAsynchronously(plugin, () -> {
             if (plugin.getDatabaseManager() == null) return;
+            if (plugin.getServer().getPlayer(uuid) != null) return;
             plugin.getDatabaseManager().setPlayerOnline(uuid.toString(), false);
             Phoenix phoenix = Phoenix.getInstance();
             if (phoenix != null && phoenix.isApiEnabled()) plugin.syncNetworkStats(phoenix);

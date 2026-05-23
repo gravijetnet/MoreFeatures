@@ -51,6 +51,12 @@ public class AutoPlaceInjector {
                 }
             });
             channel.eventLoop().submit(() -> {
+                // Guard: if the channel closed while this task was queued (player
+                // disconnected), skip the inject — the uninject task has already
+                // (or will) clean up the pipeline, and adding to a closed pipeline
+                // throws ChannelPipelineException.  Also skip map insertion so the
+                // decoder does not leak when uninject() already ran and removed the entry.
+                if (!channel.isActive()) return;
                 channel.pipeline().addAfter("decoder", HANDLER_NAME, decoder);
                 decoders.put(player, decoder);
             });
