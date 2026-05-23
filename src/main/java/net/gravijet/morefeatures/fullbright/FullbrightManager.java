@@ -26,11 +26,16 @@ public class FullbrightManager {
     private final JavaPlugin plugin;
     private final Logger logger;
     private volatile boolean enabled;
+    // BUG-26 fix: track whether fullbright has ever been switched on so that
+    // calling setEnabled(false) before any enable does not revert lighting on
+    // chunks that were never modified by this plugin.
+    private volatile boolean everEnabled;
 
     public FullbrightManager(JavaPlugin plugin, boolean enabled) {
-        this.plugin  = plugin;
-        this.logger  = plugin.getLogger();
-        this.enabled = enabled;
+        this.plugin       = plugin;
+        this.logger       = plugin.getLogger();
+        this.enabled      = enabled;
+        this.everEnabled  = enabled;
     }
 
     // -----------------------------------------------------------------
@@ -43,6 +48,7 @@ public class FullbrightManager {
 
     /** Toggles fullbright and relights/refreshes all loaded chunks. */
     public void setEnabled(boolean value) {
+        if (value) everEnabled = true;
         this.enabled = value;
         relightAllLoaded();
     }
@@ -57,6 +63,10 @@ public class FullbrightManager {
 
     /** Called on plugin enable / toggle — processes every already-loaded chunk in batches. */
     public void relightAllLoaded() {
+        // BUG-26 fix: if fullbright has never been enabled there is nothing to revert;
+        // calling revertLight on unmodified chunks wastes CPU and causes lighting flicker.
+        if (!enabled && !everEnabled) return;
+
         java.util.List<Chunk> toProcess = new java.util.ArrayList<>();
         for (World world : plugin.getServer().getWorlds()) {
             toProcess.addAll(java.util.Arrays.asList(world.getLoadedChunks()));
@@ -77,21 +87,25 @@ public class FullbrightManager {
             int end = Math.min(offset + CHUNKS_PER_TICK, chunks.size());
             for (int i = offset; i < end; i++) {
                 Chunk chunk = chunks.get(i);
-                // Force-load the chunk briefly so we can apply or revert lighting on it.
-                // This ensures chunks that unloaded between collection and this batch are
-                // still correctly reverted when fullbright is disabled (M3).
-                boolean wasLoaded = chunk.isLoaded();
-                if (!wasLoaded && !chunk.load(false)) {
-                    // load without generating new terrain; skip if load fails
-                    continue;
-                }
-                try {
-                    if (lightEnabled) applyMaxLight(chunk);
-                    else revertLight(chunk);
+                if (lightEnabled) {
+                    // BUG-25 fix (enable path): only process chunks that are still loaded.
+                    // Chunks that unloaded between snapshot and this batch will be lit by
+                    // onChunkLoad when they next load, so skip them here to prevent double
+                    // lighting + double refreshChunk packet spam.
+                    if (!chunk.isLoaded()) continue;
+                    applyMaxLight(chunk);
                     chunk.getWorld().refreshChunk(chunk.getX(), chunk.getZ());
-                } finally {
-                    // Unload again if we loaded it ourselves, to avoid inflating memory.
-                    if (!wasLoaded) chunk.unload(false);
+                } else {
+                    // Disable path: force-load so we can revert lighting even if the chunk
+                    // unloaded between snapshot collection and this batch.
+                    boolean wasLoaded = chunk.isLoaded();
+                    if (!wasLoaded && !chunk.load(false)) continue;
+                    try {
+                        revertLight(chunk);
+                        chunk.getWorld().refreshChunk(chunk.getX(), chunk.getZ());
+                    } finally {
+                        if (!wasLoaded) chunk.unload(false);
+                    }
                 }
             }
             scheduleBatch(chunks, end, lightEnabled, total);
@@ -106,6 +120,8 @@ public class FullbrightManager {
         net.minecraft.server.v1_8_R3.Chunk nmsChunk = ((CraftChunk) chunk).getHandle();
         for (ChunkSection section : nmsChunk.getSections()) {
             if (section != null) {
+                // BUG-24: .clone() is required — NibbleArray may store the reference
+                // directly; without it, NMS could mutate MAX_LIGHT through the NibbleArray.
                 section.b(new NibbleArray(MAX_LIGHT.clone())); // sky-light
                 section.a(new NibbleArray(MAX_LIGHT.clone())); // block-light
             }

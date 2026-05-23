@@ -4,7 +4,6 @@ import net.gravijet.morefeatures.music.MusicConfig;
 import net.gravijet.morefeatures.music.MusicManager;
 import net.gravijet.morefeatures.music.util.SongDownloader;
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -14,6 +13,7 @@ import org.bukkit.entity.Player;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * /music — main music control command with subcommands.
@@ -71,7 +71,7 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
             case "volume":
                 return handleVolume(sender, args);
             default:
-                sender.sendMessage("§cUnknown subcommand: /music " + ChatColor.stripColor(sub));
+                sender.sendMessage("§cUnknown subcommand. Use /music help for usage.");
                 sendUsage(sender);
                 return true;
         }
@@ -108,9 +108,16 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
         }
 
         final String finalFilename = filename;
+        final UUID finalUuid = player.getUniqueId();
         sender.sendMessage("§7Loading song...");
         musicManager.playSongAsync(player, finalFilename,
-                () -> sender.sendMessage("§aNow playing: " + finalFilename),
+                () -> {
+                    // BUG-16 fix: only confirm if the song is still active — the player may
+                    // have issued /music stop between the async parse and this callback.
+                    if (musicManager.getActiveSong(finalUuid) != null) {
+                        sender.sendMessage("§aNow playing: " + finalFilename);
+                    }
+                },
                 null);
         return true;
     }
@@ -126,6 +133,10 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
         }
 
         Player player = (Player) sender;
+        if (musicManager.getActiveSong(player.getUniqueId()) == null) {
+            sender.sendMessage("§7No song is currently playing.");
+            return true;
+        }
         musicManager.stopSong(player);
         sender.sendMessage("§aMusic stopped.");
         return true;
@@ -144,7 +155,7 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
 
         Player target = Bukkit.getPlayer(args[1]);
         if (target == null) {
-            sender.sendMessage("§cPlayer not found: " + args[1]);
+            sender.sendMessage("§cPlayer not found.");
             return true;
         }
 
@@ -206,6 +217,8 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
                 plugin,
                 () -> {
                     int count = songDownloader.downloadMissing(musicConfig);
+                    // BUG-14: invalidate the song list cache so the new files appear immediately.
+                    musicManager.invalidateSongCache();
                     Bukkit.getScheduler().runTask(
                             plugin,
                             () -> sender.sendMessage("§aDownload complete. "

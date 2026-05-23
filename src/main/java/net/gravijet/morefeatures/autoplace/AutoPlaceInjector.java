@@ -26,22 +26,32 @@ public class AutoPlaceInjector {
     }
 
     public void inject(Player player) {
-        // Remove from the pipeline before removing from the map so that the event-loop
-        // removal task sees the correct state and a concurrent inject() cannot race
-        // past the guard and then have its handler removed by a stale removal task (H6).
-        uninject(player);
-
         AutoPlaceDecoder decoder = new AutoPlaceDecoder(player, plugin, config);
-
         Channel channel = getChannel(player);
+
         if (channel.eventLoop().inEventLoop()) {
-            channel.pipeline().addAfter("decoder", HANDLER_NAME, decoder);
+            // Already on the event loop: remove old handler synchronously then add the new one.
+            ChannelPipeline pipeline = channel.pipeline();
+            if (pipeline.get(HANDLER_NAME) != null) {
+                pipeline.remove(HANDLER_NAME);
+                decoders.remove(player);
+            }
+            pipeline.addAfter("decoder", HANDLER_NAME, decoder);
             decoders.put(player, decoder);
         } else {
-            channel.eventLoop().execute(() -> {
+            // BUG-09/10 fix: submit removal and add as two sequential tasks on the same
+            // single-threaded event loop. Tasks submitted to a single-threaded EventLoop
+            // execute strictly in submission order, so the add is guaranteed to run after
+            // the remove — no Future.get() needed, which would deadlock on the same thread.
+            channel.eventLoop().submit(() -> {
+                ChannelPipeline pipeline = channel.pipeline();
+                if (pipeline.get(HANDLER_NAME) != null) {
+                    pipeline.remove(HANDLER_NAME);
+                    decoders.remove(player);
+                }
+            });
+            channel.eventLoop().submit(() -> {
                 channel.pipeline().addAfter("decoder", HANDLER_NAME, decoder);
-                // Store in map only after the handler is actually in the pipeline so
-                // uninject() cannot find the entry before the pipeline add completes.
                 decoders.put(player, decoder);
             });
         }
@@ -54,9 +64,9 @@ public class AutoPlaceInjector {
         if (removed == null) return; // nothing to remove
 
         Channel channel = getChannel(player);
-        // Execute the pipeline removal synchronously on the event loop so that a
-        // subsequent inject() call (e.g. world change) cannot add the new handler
-        // before the old one has been removed — avoiding a "duplicate name" exception.
+        // BUG-09/10 fix: use submit() (not execute()) so the returned Future can be used
+        // by a subsequent inject() to schedule the add *after* this removal completes,
+        // preventing a "duplicate handler name" Netty exception on rapid reinjects.
         Runnable remove = () -> {
             ChannelPipeline pipeline = channel.pipeline();
             if (pipeline.get(HANDLER_NAME) != null) {
@@ -66,10 +76,7 @@ public class AutoPlaceInjector {
         if (channel.eventLoop().inEventLoop()) {
             remove.run();
         } else {
-            // submitTo instead of execute: the returned future lets inject() schedule
-            // *after* this removal completes, but here we just need the ordering guarantee
-            // that the removal task is enqueued before any subsequent inject() task.
-            channel.eventLoop().execute(remove);
+            channel.eventLoop().submit(remove);
         }
     }
 

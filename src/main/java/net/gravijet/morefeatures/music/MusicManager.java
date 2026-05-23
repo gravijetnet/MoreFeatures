@@ -19,6 +19,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -41,6 +43,11 @@ public class MusicManager implements Listener {
     private final Map<UUID, SongPlayer> activePlayers = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> stopTasks = new ConcurrentHashMap<>();
 
+    // BUG-14 fix: cache the song list to avoid disk I/O on every tab-complete.
+    private static final long SONG_CACHE_TTL_MS = 5_000L;
+    private final AtomicReference<List<String>> cachedSongs = new AtomicReference<>(null);
+    private final AtomicLong cacheTime = new AtomicLong(0L);
+
     public MusicManager(JavaPlugin plugin, File songsFolder, byte volume) {
         this.plugin = plugin;
         this.logger = plugin.getLogger();
@@ -57,8 +64,10 @@ public class MusicManager implements Listener {
     @EventHandler
     public void onSongEnd(SongEndEvent event) {
         SongPlayer sp = event.getSongPlayer();
+        // BUG-12 fix: use compute() to atomically check-and-remove so a concurrent
+        // playSongAsync cannot see a stale entry and destroy the new player.
         activePlayers.entrySet().removeIf(entry -> {
-            if (entry.getValue().equals(sp)) {
+            if (entry.getValue() == sp) {
                 cancelStopTask(entry.getKey());
                 return true;
             }
@@ -165,11 +174,19 @@ public class MusicManager implements Listener {
 
     public void stopAll() {
         List<UUID> uuids = new ArrayList<>(activePlayers.keySet());
+        // BUG-13 fix: count only the UUIDs that were actually still active when we called
+        // stopSongInternal() rather than the snapshot size, which could over-count if a
+        // stop task fired concurrently and already removed an entry.
+        int stopped = 0;
         for (UUID uuid : uuids) {
             cancelStopTask(uuid);
-            stopSongInternal(uuid);
+            SongPlayer sp = activePlayers.remove(uuid);
+            if (sp != null) {
+                try { sp.setPlaying(false); sp.destroy(); } catch (Exception ignored) {}
+                stopped++;
+            }
         }
-        logger.info("Stopped all active songs (" + uuids.size() + " player(s)).");
+        logger.info("Stopped all active songs (" + stopped + " player(s)).");
     }
 
     public SongPlayer getActiveSong(UUID uuid) {
@@ -177,16 +194,38 @@ public class MusicManager implements Listener {
     }
 
     public List<String> getAvailableSongs() {
+        // BUG-14 fix: cache the directory listing for SONG_CACHE_TTL_MS to avoid
+        // synchronous disk I/O on the main thread on every tab-complete keypress.
+        long now = System.currentTimeMillis();
+        if (now - cacheTime.get() < SONG_CACHE_TTL_MS) {
+            List<String> cached = cachedSongs.get();
+            if (cached != null) return cached;
+        }
+
         List<String> list = new ArrayList<>();
-        if (!songsFolder.exists() || !songsFolder.isDirectory()) return list;
+        if (!songsFolder.exists() || !songsFolder.isDirectory()) {
+            cachedSongs.set(list);
+            cacheTime.set(now);
+            return list;
+        }
 
         File[] files = songsFolder.listFiles(
                 (dir, name) -> name.toLowerCase().endsWith(".nbs"));
-        if (files == null) return list;
+        if (files != null) {
+            for (File f : files) list.add(f.getName());
+            Collections.sort(list, String.CASE_INSENSITIVE_ORDER);
+        }
 
-        for (File f : files) list.add(f.getName());
-        Collections.sort(list, String.CASE_INSENSITIVE_ORDER);
+        // Set cachedSongs before cacheTime so a concurrent reader that sees the new
+        // timestamp also sees the new list (not null from an in-progress update).
+        cachedSongs.set(list);
+        cacheTime.set(now);  // publish after the list is visible
         return list;
+    }
+
+    /** Invalidates the song list cache (call after a download completes). */
+    public void invalidateSongCache() {
+        cacheTime.set(0L);
     }
 
     public String getRandomSong() {

@@ -43,7 +43,7 @@ import java.util.logging.Level;
 public class Main extends JavaPlugin {
 
     private BridgeConfig bridgeConfig;
-    private DatabaseManager databaseManager;
+    private volatile DatabaseManager databaseManager;
     private PlaytimeSync playtimeSync;
     private NetworkStatsSync networkStatsSync;
     private SyncTask syncTask;
@@ -120,8 +120,9 @@ public class Main extends JavaPlugin {
         if (syncTask != null) {
             syncTask.cancel();
         }
-        // Cancel all plugin tasks (including per-player playtime timers) before closing
-        // the DB pool so no new async writes are submitted after the pool shuts down.
+        // BUG-03 fix: cancel each timer explicitly before clearing the map so no
+        // in-flight task can slip a DB write past the pool shutdown.
+        playtimeTasks.forEach((uuid, taskId) -> getServer().getScheduler().cancelTask(taskId));
         playtimeTasks.clear();
         getServer().getScheduler().cancelTasks(this);
         if (databaseManager != null) {
@@ -183,6 +184,10 @@ public class Main extends JavaPlugin {
         File songsFolder = new File(getDataFolder(), "songs");
         songDownloader = new SongDownloader(getLogger(), songsFolder);
 
+        // BUG-01 fix: assign musicManager before scheduling the async task so the
+        // lambda can safely call musicManager.getAvailableSongs().
+        musicManager = new MusicManager(this, songsFolder, musicConfig.getVolume());
+
         getServer().getScheduler().runTaskAsynchronously(this, () -> {
             int count = songDownloader.downloadMissing(musicConfig);
             if (count > 0) getLogger().info("Downloaded " + count + " new song(s).");
@@ -192,7 +197,6 @@ public class Main extends JavaPlugin {
         });
 
         // MusicManager registers SongEndEvent itself
-        musicManager = new MusicManager(this, songsFolder, musicConfig.getVolume());
 
         MusicCommand musicCmd = new MusicCommand(musicManager, songDownloader, musicConfig);
         org.bukkit.command.PluginCommand musicCommand = getCommand("music");

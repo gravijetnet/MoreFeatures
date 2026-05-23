@@ -13,8 +13,11 @@ public class NetworkStatsSync {
 
     private final DatabaseManager databaseManager;
 
-    private volatile long cachedTotalPlayers = 0L;
-    private volatile long lastCountTime      = 0L;
+    // BUG-22 fix: plain longs guarded by synchronized; the volatile keyword alone cannot
+    // make a check-then-act sequence atomic, so two concurrent sync() calls could both
+    // see a stale lastCountTime, both call countPlayers(), and double the DB load.
+    private long cachedTotalPlayers = 0L;
+    private long lastCountTime      = 0L;
 
     public NetworkStatsSync(DatabaseManager databaseManager) {
         this.databaseManager = databaseManager;
@@ -28,7 +31,7 @@ public class NetworkStatsSync {
         databaseManager.updateNetworkStats(currentOnline, totalPlayers);
     }
 
-    private long getCachedTotalPlayers() {
+    private synchronized long getCachedTotalPlayers() {
         long now = System.currentTimeMillis();
         if (now - lastCountTime >= COUNT_CACHE_TTL_MS) {
             cachedTotalPlayers = databaseManager.countPlayers();

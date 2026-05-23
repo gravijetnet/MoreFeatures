@@ -53,8 +53,14 @@ public class MusicConfig {
 
         logger.info("Loaded " + songs.size() + " song entries from music.yml.");
 
-        // Rickroll file — configurable, with fallback
-        this.rickrollFile = cfg.getString("rickroll_file", "rickroll.nbs");
+        // BUG-30 fix: validate rickroll_file at load time so a misconfigured or
+        // adversarially-set value cannot slip past the downstream isSafeFilename() check.
+        String rawRickroll = cfg.getString("rickroll_file", "rickroll.nbs");
+        if (!isSafeFilename(rawRickroll)) {
+            logger.warning("rickroll_file '" + rawRickroll + "' is unsafe — falling back to 'rickroll.nbs'.");
+            rawRickroll = "rickroll.nbs";
+        }
+        this.rickrollFile = rawRickroll;
 
         // Volume — clamp to 1-100
         int rawVolume = cfg.getInt("volume", 80);
@@ -79,6 +85,13 @@ public class MusicConfig {
      */
     public byte getVolume() {
         return volume;
+    }
+
+    private static boolean isSafeFilename(String name) {
+        if (name == null || name.isEmpty()) return false;
+        if (name.indexOf('/') >= 0 || name.indexOf('\\') >= 0) return false;
+        if (name.contains("..")) return false;
+        return new java.io.File(name).getName().equals(name);
     }
 
     /**

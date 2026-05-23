@@ -70,11 +70,13 @@ public class PlayerListener implements Listener {
     public void onPlayerQuit(PlayerQuitEvent event) {
         UUID uuid = event.getPlayer().getUniqueId();
 
+        // BUG-27 fix: cancel the periodic timer first so it cannot fire a concurrent write
+        // between the cancel and the final one-shot sync below.
+        plugin.cancelPlaytimeTimer(uuid);
+
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
             if (plugin.getPlaytimeSync() != null) plugin.getPlaytimeSync().syncPlaytime(uuid);
         });
-
-        plugin.cancelPlaytimeTimer(uuid);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -83,12 +85,15 @@ public class PlayerListener implements Listener {
 
         UUID uuid = event.getUuid();
 
+        // BUG-28 fix: increased delay from 5 to 40 ticks (2 s) to survive heavy-load
+        // ticks. The task is registered with the plugin so onDisable()'s cancelTasks()
+        // will kill it before the DB pool is closed, preventing a write-after-close.
         plugin.getServer().getScheduler().runTaskLaterAsynchronously(plugin, () -> {
             if (plugin.getDatabaseManager() == null) return;
             plugin.getDatabaseManager().setPlayerOnline(uuid.toString(), false);
             Phoenix phoenix = Phoenix.getInstance();
             if (phoenix != null && phoenix.isApiEnabled()) plugin.syncNetworkStats(phoenix);
-        }, 5L);
+        }, 40L);
     }
 
     // -------------------------------------------------------------------------

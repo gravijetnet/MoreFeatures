@@ -37,10 +37,10 @@ public class AutoPlaceConfig {
 
     /**
      * Minimum time (ms) allowed to place {@code PLACE_WINDOW_SIZE} (10) blocks.
-     * Default 400 ms → allows up to 25 blocks/s before flagging as FastPlace.
+     * Default 200 ms → allows up to 50 blocks/s before flagging as FastPlace.
      */
     public long getFastPlaceWindowMs() {
-        return cfg.getLong("fastplace.window-ms", 400L);
+        return cfg.getLong("fastplace.window-ms", 200L);
     }
 
     /**
@@ -77,9 +77,13 @@ public class AutoPlaceConfig {
     private static String applyPlaceholders(String s, String playerName, String playerUuid) {
         // Strip characters that could break or inject into a dispatched command.
         String safeName = playerName.replaceAll("[^a-zA-Z0-9_]", "_");
+        // BUG-11 fix: also sanitize the UUID — allow only hex digits and hyphens (the
+        // canonical UUID format). This guards against a crafted event supplying a
+        // non-standard UUID string that could inject into the command.
+        String safeUuid = playerUuid.replaceAll("[^a-fA-F0-9\\-]", "");
         // Substitute %uuid% before %player% to prevent double-substitution if a player name
         // contained the literal string "%uuid%".
-        return s.replace("%uuid%", playerUuid)
+        return s.replace("%uuid%", safeUuid)
                 .replace("%player%", safeName);
     }
 }

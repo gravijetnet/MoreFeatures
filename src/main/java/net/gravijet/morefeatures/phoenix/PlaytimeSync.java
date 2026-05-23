@@ -65,7 +65,9 @@ public class PlaytimeSync {
         long playtimeMs = profile.getPlayTime(logins);
         if (playtimeMs < 0) return;
 
-        long playtimeSeconds = playtimeMs / 1000L;
+        // BUG-29 fix: round rather than truncate so accumulated sub-second remainder
+        // does not silently under-count playtime across many syncs.
+        long playtimeSeconds = (playtimeMs + 500L) / 1000L;
         databaseManager.updatePlayerPlaytime(uuid.toString(), playtimeSeconds);
     }
 }

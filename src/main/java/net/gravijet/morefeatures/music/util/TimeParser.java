@@ -20,9 +20,11 @@ import java.util.regex.Pattern;
  */
 public final class TimeParser {
 
-    // Captures optional hours, minutes, seconds in that order.
+    // Captures hours, minutes, seconds; requires at least one component to be present.
+    // BUG-19 fix: the lookahead (?=...) ensures the all-optional groups cannot match
+    // the empty string, so a bare number or whitespace-only input correctly fails here.
     private static final Pattern PATTERN =
-            Pattern.compile("(?:(\\d+)h)?\\s*(?:(\\d+)m)?\\s*(?:(\\d+)s)?",
+            Pattern.compile("(?=\\d)(?:(\\d+)h)?\\s*(?:(\\d+)m)?\\s*(?:(\\d+)s)?",
                             Pattern.CASE_INSENSITIVE);
 
     private TimeParser() {
@@ -57,12 +59,18 @@ public final class TimeParser {
         long minutes = parseGroup(m, 2);
         long seconds = parseGroup(m, 3);
 
-        // Guard against overflow before multiplying
-        if (hours > MAX_SECONDS / 3600 || minutes > MAX_SECONDS / 60 || seconds > MAX_SECONDS) {
-            throw new IllegalArgumentException(
-                    "Time '" + input + "' exceeds the maximum of 24h.");
+        // Clamp each component before multiplying to prevent long overflow reaching
+        // the post-sum check with a wrapped negative value.  MAX_SECONDS / unit is
+        // the tightest upper bound that still allows the multiplication to be safe.
+        if (hours   > MAX_SECONDS / 3600) {
+            throw new IllegalArgumentException("Time '" + input + "' exceeds the maximum of 24h.");
         }
-
+        if (minutes > MAX_SECONDS / 60) {
+            throw new IllegalArgumentException("Time '" + input + "' exceeds the maximum of 24h.");
+        }
+        if (seconds > MAX_SECONDS) {
+            throw new IllegalArgumentException("Time '" + input + "' exceeds the maximum of 24h.");
+        }
         long total = hours * 3600L + minutes * 60L + seconds;
         if (total <= 0) {
             throw new IllegalArgumentException(

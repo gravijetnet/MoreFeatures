@@ -65,12 +65,22 @@ public class BridgeConfig {
         this.poolSize          = rawPoolSize;
         this.syncIntervalTicks = cfg.getLong("sync.interval-ticks", 6000L);
         this.useSSL            = cfg.getBoolean("database.use-ssl", false);
+
+        // BUG-23 fix: warn operators when SSL is disabled so they are aware of the risk.
+        if (logger != null && !this.useSSL) {
+            logger.warning("database.use-ssl is false. Database credentials will be sent "
+                    + "in plaintext. Set use-ssl: true in phoenix.yml for production deployments.");
+        }
     }
 
     public String buildJdbcUrl() {
+        // BUG-23 fix: do not append allowPublicKeyRetrieval=true when SSL is disabled.
+        // That parameter allows the server to send its RSA public key over an unencrypted
+        // channel, enabling a MITM to intercept the password. Omitting it means the
+        // connector will refuse to authenticate without SSL if the server requires RSA key
+        // exchange — the correct secure failure mode.
         return "jdbc:mysql://" + host + ":" + port + "/" + database
                 + "?useSSL=" + useSSL
-                + (useSSL ? "" : "&allowPublicKeyRetrieval=true")
                 + "&characterEncoding=utf8";
     }
 }

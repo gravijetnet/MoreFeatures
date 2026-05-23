@@ -38,6 +38,7 @@ public class RickrollCommand implements CommandExecutor, TabCompleter {
         Player target;
         String timeArg;
         boolean targetingOthers;
+        long preParsedSeconds = -1; // BUG-17: cache the first parse to avoid parsing twice
 
         // ---- parse [player] and <time> ----
         if (args.length == 0) {
@@ -57,13 +58,11 @@ public class RickrollCommand implements CommandExecutor, TabCompleter {
                 targetingOthers = !target.equals(sender);
             } else {
                 // No online player by that name — try to parse as a time string.
-                // Capture the parsed value to avoid parsing the same string twice later.
-                long parsedSeconds = -1;
                 try {
-                    parsedSeconds = TimeParser.parseSeconds(args[0]);
+                    preParsedSeconds = TimeParser.parseSeconds(args[0]);
                 } catch (IllegalArgumentException ignored) {}
 
-                if (parsedSeconds > 0) {
+                if (preParsedSeconds > 0) {
                     if (!(sender instanceof Player)) {
                         sender.sendMessage("§cConsole must specify a player: /rickroll <player> [time]");
                         return true;
@@ -72,7 +71,7 @@ public class RickrollCommand implements CommandExecutor, TabCompleter {
                     timeArg = args[0];
                     targetingOthers = false;
                 } else {
-                    sender.sendMessage("§cPlayer not found: " + args[0]);
+                    sender.sendMessage("§cPlayer not found.");
                     return true;
                 }
             }
@@ -80,7 +79,7 @@ public class RickrollCommand implements CommandExecutor, TabCompleter {
             // /rickroll <player> <time>
             target = Bukkit.getPlayer(args[0]);
             if (target == null) {
-                sender.sendMessage("§cPlayer not found: " + args[0]);
+                sender.sendMessage("§cPlayer not found.");
                 return true;
             }
             timeArg = args[1];
@@ -101,13 +100,18 @@ public class RickrollCommand implements CommandExecutor, TabCompleter {
         }
 
         // ---- parse the time if provided ----
+        // BUG-17 fix: reuse the already-parsed value when it came from the single-arg path.
         long stopAfterSeconds = -1;
         if (timeArg != null) {
-            try {
-                stopAfterSeconds = TimeParser.parseSeconds(timeArg);
-            } catch (IllegalArgumentException e) {
-                sender.sendMessage("§c" + e.getMessage());
-                return true;
+            if (preParsedSeconds > 0) {
+                stopAfterSeconds = preParsedSeconds;
+            } else {
+                try {
+                    stopAfterSeconds = TimeParser.parseSeconds(timeArg);
+                } catch (IllegalArgumentException e) {
+                    sender.sendMessage("§c" + e.getMessage());
+                    return true;
+                }
             }
         }
 
@@ -124,7 +128,9 @@ public class RickrollCommand implements CommandExecutor, TabCompleter {
                     }
 
                     if (finalStopAfterSeconds > 0) {
-                        long delayTicks = finalStopAfterSeconds * 20L;
+                        // BUG-18 fix: guard against overflow if MAX_SECONDS is ever raised
+                        // beyond Long.MAX_VALUE / 20.
+                        long delayTicks = Math.min(finalStopAfterSeconds, Long.MAX_VALUE / 20L) * 20L;
                         int taskId = Bukkit.getScheduler().runTaskLater(
                                 musicManager.getPlugin(),
                                 () -> {
@@ -148,8 +154,8 @@ public class RickrollCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command,
                                       String alias, String[] args) {
-        if (args.length == 1) {
-            // Suggest online player names
+        if (args.length == 1 && sender.hasPermission("morefeatures.rickroll.others")) {
+            // Only suggest other player names to those who can target others
             List<String> names = new ArrayList<>();
             for (Player p : Bukkit.getOnlinePlayers()) {
                 if (p.getName().toLowerCase().startsWith(args[0].toLowerCase())) {

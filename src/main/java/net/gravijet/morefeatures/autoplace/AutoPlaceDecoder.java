@@ -111,7 +111,8 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
     private volatile WorldServer worldServer;
 
     // Per-player mutable state — only ever touched by the Netty I/O thread for this player.
-    private BlockPosition requestedBlock = new BlockPosition(0, 0, 0);
+    // BUG-06 fix: null initial value so position (0,0,0) is never falsely deduplicated.
+    private BlockPosition requestedBlock = null;
 
     // Replaced Bukkit Location with plain doubles to avoid sharing a mutable Bukkit
     // object between the Netty I/O thread and the Bukkit main thread.
@@ -130,7 +131,8 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
     private int flags = 0;
 
     // One-shot guard: punishment fires at most once per session.
-    private boolean punished = false;
+    // BUG-07 fix: volatile so main-thread reads (e.g. future inspection) see the Netty write.
+    private volatile boolean punished = false;
 
     // Must be called from the main thread (e.g. AutoPlaceListener.onJoin or inject()).
     public AutoPlaceDecoder(Player player, JavaPlugin plugin, AutoPlaceConfig config) {
@@ -201,7 +203,12 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
     }
 
     private boolean handleFlying(PacketPlayInFlying packet) {
-        sentBlock = false;
+        // BUG-04 fix: only reset sentBlock when the packet carries real movement data.
+        // Empty flying packets (no position, no look) must not clear the flag — a hacked
+        // client could spam them to evade AutoPlace detection.
+        if (packet.g() || packet.h()) {
+            sentBlock = false;
+        }
 
         if (packet.g()) { // hasPos
             locX = packet.a();
@@ -244,7 +251,8 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
 
         if (ws.getType(shifted).getBlock() != Blocks.AIR) return true;
 
-        if (requestedBlock.equals(shifted)) return true;
+        // BUG-06 fix: null guard so (0,0,0) is not falsely deduplicated on the first packet.
+        if (requestedBlock != null && requestedBlock.equals(shifted)) return true;
         requestedBlock = shifted;
 
         if (isPlayerInsideBlock(shifted)) return true;
@@ -269,16 +277,20 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
                 lastFlagTime = now;
                 if (flags >= config.getFlagThreshold()) {
                     handleDetection(ws, position, shifted, "FastPlace");
-                    if (config.shouldCancel()) {
-                        sendCancelPackets(ws, position, shifted);
-                        return false;
-                    }
+                }
+                // Reset sentBlock unconditionally so the AutoPlace state machine stays
+                // consistent whether or not packet cancellation is enabled.
+                sentBlock = false;
+                if (config.shouldCancel() && flags >= config.getFlagThreshold()) {
+                    sendCancelPackets(ws, position, shifted);
+                    return false;
                 }
                 return true;
             }
         }
 
         // ---- AUTOPLACE DETECTION ----
+        // Note: flag decay already ran above before the FastPlace check; no second decay needed.
         if (!sentBlock) {
             sentBlock = true;
             return true;
@@ -286,6 +298,9 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
 
         flags++;
         lastFlagTime = now;
+        // Reset sentBlock unconditionally so the next placement starts a fresh
+        // two-packet sequence rather than immediately re-triggering AutoPlace.
+        sentBlock = false;
         if (flags >= config.getFlagThreshold()) {
             handleDetection(ws, position, shifted, "AutoPlace");
             if (config.shouldCancel()) {

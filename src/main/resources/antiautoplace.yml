@@ -13,7 +13,7 @@ cancel: true
 alerts:
   enabled: true
   # Placeholders: %player%, %uuid%, %type% (AutoPlace/FastPlace), %flags% (flag count)
-  message: "&caAnticheat &8» &f%player% &chas been flagged for AutoPlace!"
+  message: "&cAnticheat &8» &f%player% &chas been flagged for AutoPlace!"
 
 punishments:
   enabled: false
@@ -23,7 +23,7 @@ punishments:
 
 # FastPlace detection: fires when a player places PLACE_WINDOW_SIZE (10) blocks
 # faster than window-ms milliseconds.
-# Default: 400ms → flags anything faster than 25 blocks/second.
+# Default: 200ms → flags anything faster than 50 blocks/second.
 # Increase this if legitimate bridging is being flagged.
 fastplace:
   window-ms: 200

@@ -88,9 +88,11 @@ public class DatabaseManager {
         hikari.setJdbcUrl(config.buildJdbcUrl());
         hikari.setUsername(config.getUsername());
         hikari.setPassword(config.getPassword());
-        int poolSize = Math.max(2, config.getPoolSize()); // ensure poolSize >= minimumIdle
+        int poolSize = config.getPoolSize(); // BridgeConfig already validates >= 1
         hikari.setMaximumPoolSize(poolSize);
-        hikari.setMinimumIdle(Math.min(2, poolSize));
+        // Use half the pool size (min 1) so idle connections shrink when a large
+        // pool is configured, while still keeping at least one warm connection.
+        hikari.setMinimumIdle(Math.max(1, poolSize / 2));
         hikari.setConnectionTimeout(5_000L);
         hikari.setIdleTimeout(300_000L);
         hikari.setMaxLifetime(600_000L);

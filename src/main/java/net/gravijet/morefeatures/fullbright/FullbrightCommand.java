@@ -50,7 +50,7 @@ public class FullbrightCommand implements CommandExecutor, TabCompleter {
                         + (fullbrightManager.isEnabled() ? "§2enabled" : "§cdisabled") + "§7.");
                 break;
             default:
-                sender.sendMessage("§cUsage: /fullbright [on|off|toggle|status]");
+                sender.sendMessage("§cUnknown option. Usage: /fullbright [on|off|toggle|status]");
         }
         return true;
     }
