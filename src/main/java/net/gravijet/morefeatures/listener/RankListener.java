@@ -30,11 +30,13 @@ public class RankListener implements Listener {
 
     private void updateRank(IProfile profile) {
         if (profile == null) return;
+        if (plugin.getDatabaseManager() == null) return;
         String uuid = profile.getUniqueId().toString();
         IRank rank = profile.getHighestRank();
-        // BUG-15: propagate null rank to DB so revoked ranks are cleared, not left stale
         String rankName = rank != null ? ChatColor.stripColor(rank.getDisplayName()) : null;
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin,
-                () -> plugin.getDatabaseManager().updatePlayerRank(uuid, rankName));
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+            if (plugin.getDatabaseManager() == null) return;
+            plugin.getDatabaseManager().updatePlayerRank(uuid, rankName);
+        });
     }
 }

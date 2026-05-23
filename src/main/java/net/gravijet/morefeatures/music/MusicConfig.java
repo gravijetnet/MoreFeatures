@@ -39,8 +39,10 @@ public class MusicConfig {
             @SuppressWarnings("unchecked")
             java.util.Map<String, Object> map = (java.util.Map<String, Object>) obj;
 
-            String url = String.valueOf(map.getOrDefault("url", ""));
-            String filename = String.valueOf(map.getOrDefault("filename", ""));
+            Object rawUrl      = map.get("url");
+            Object rawFilename = map.get("filename");
+            String url      = (rawUrl      instanceof String) ? (String) rawUrl      : "";
+            String filename = (rawFilename instanceof String) ? (String) rawFilename : "";
 
             if (!url.isEmpty() && !filename.isEmpty()) {
                 songs.add(new SongEntry(url, filename));

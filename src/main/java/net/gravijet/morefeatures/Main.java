@@ -97,7 +97,6 @@ public class Main extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new PunishmentListener(this), this);
         getServer().getPluginManager().registerEvents(new RankListener(this),      this);
 
-        // BUG-02: initialise syncTask before starting per-player timers so the ordering is clear
         syncTask = new SyncTask(this);
         long syncInterval = Math.max(20L, bridgeConfig.getSyncIntervalTicks());
         syncTask.runTaskTimerAsynchronously(this, 100L, syncInterval);
@@ -121,10 +120,10 @@ public class Main extends JavaPlugin {
         if (syncTask != null) {
             syncTask.cancel();
         }
+        // Cancel per-player playtime timers first, then all remaining plugin tasks.
+        // This must happen before closing the DB pool so no new async writes are submitted.
         playtimeTasks.values().forEach(id -> getServer().getScheduler().cancelTask(id));
         playtimeTasks.clear();
-        // BUG-04: cancel ALL async tasks for this plugin before closing the pool so inflight
-        // DB writes don't race against pool shutdown
         getServer().getScheduler().cancelTasks(this);
         if (databaseManager != null) {
             databaseManager.close();
@@ -236,9 +235,6 @@ public class Main extends JavaPlugin {
         }
 
         sender.sendMessage("§aBridge: running immediate sync...");
-        // BUG-01: call syncNetworkStats directly rather than creating a throw-away BukkitRunnable
-        // (BukkitRunnable.run() called outside the scheduler leaks scheduler state and allows
-        // concurrent races if the command is spammed)
         getServer().getScheduler().runTaskAsynchronously(this, () -> {
             Phoenix phoenix = Phoenix.getInstance();
             if (phoenix != null && phoenix.isApiEnabled()) {
@@ -255,13 +251,16 @@ public class Main extends JavaPlugin {
 
     public void startPlaytimeTimer(UUID uuid) {
         if (databaseManager == null) return;
-        cancelPlaytimeTimer(uuid);
-
-        int taskId = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
-            if (playtimeSync != null) playtimeSync.syncPlaytime(uuid);
-        }, 6000L, 6000L).getTaskId();
-
-        playtimeTasks.put(uuid, taskId);
+        // Atomically cancel any existing timer and schedule a new one so concurrent
+        // calls for the same UUID cannot leak a duplicate timer.
+        playtimeTasks.compute(uuid, (id, existingTaskId) -> {
+            if (existingTaskId != null) {
+                getServer().getScheduler().cancelTask(existingTaskId);
+            }
+            return getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
+                if (playtimeSync != null) playtimeSync.syncPlaytime(uuid);
+            }, 6000L, 6000L).getTaskId();
+        });
     }
 
     public void cancelPlaytimeTimer(UUID uuid) {
@@ -300,20 +299,24 @@ public class Main extends JavaPlugin {
 
         phoenix.getPunishmentHandler().getAllPunishments()
                 .thenAccept((List<IPunishment> punishments) -> {
-                    // BUG-03: plugin may have been disabled while this future was pending;
-                    // check the manager is still open before writing
-                    if (databaseManager == null) return;
-                    long bans = 0, mutes = 0, kicks = 0;
-                    for (IPunishment p : punishments) {
-                        PunishmentType type = p.getPunishmentType();
-                        if      (type == PunishmentType.BAN)  bans++;
-                        else if (type == PunishmentType.MUTE) mutes++;
-                        else if (type == PunishmentType.KICK) kicks++;
+                    // Guard against the pool being closed while this future was pending.
+                    DatabaseManager db = databaseManager;
+                    if (db == null) return;
+                    try {
+                        long bans = 0, mutes = 0, kicks = 0;
+                        for (IPunishment p : punishments) {
+                            PunishmentType type = p.getPunishmentType();
+                            if      (type == PunishmentType.BAN)  bans++;
+                            else if (type == PunishmentType.MUTE) mutes++;
+                            else if (type == PunishmentType.KICK) kicks++;
+                        }
+                        db.updateStat("total_bans",  bans);
+                        db.updateStat("total_mutes", mutes);
+                        db.updateStat("total_kicks", kicks);
+                        getLogger().info("Seeded — bans: " + bans + ", mutes: " + mutes + ", kicks: " + kicks);
+                    } catch (Exception ex) {
+                        getLogger().log(Level.WARNING, "Failed to seed punishment counts", ex);
                     }
-                    databaseManager.updateStat("total_bans",  bans);
-                    databaseManager.updateStat("total_mutes", mutes);
-                    databaseManager.updateStat("total_kicks", kicks);
-                    getLogger().info("Seeded — bans: " + bans + ", mutes: " + mutes + ", kicks: " + kicks);
                 })
                 .exceptionally(ex -> {
                     getLogger().log(Level.WARNING, "Failed to load initial punishment counts", ex);

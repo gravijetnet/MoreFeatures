@@ -166,7 +166,9 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
         musicManager.playSongAsync(finalTarget, finalFilename,
                 () -> {
                     sender.sendMessage("§aPlaying '" + finalFilename + "' for " + finalTarget.getName() + ".");
-                    finalTarget.sendMessage("§a" + sender.getName() + " started playing: " + finalFilename);
+                    if (finalTarget.isOnline()) {
+                        finalTarget.sendMessage("§a" + sender.getName() + " started playing: " + finalFilename);
+                    }
                 },
                 () -> sender.sendMessage("§cFailed to start playback for " + finalTarget.getName() + "."));
         return true;
@@ -233,10 +235,8 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
             if (song == null) {
                 sender.sendMessage("§7No song is currently playing for you.");
             } else {
-                // BUG-39: song.getTitle() can be null for untitled NBS files
                 String songTitle = song.getTitle();
                 String displayTitle = (songTitle != null && !songTitle.isEmpty()) ? songTitle : "(untitled)";
-                // BUG-40: use song.getSpeed() (tempo) instead of hardcoded 20 ticks/s
                 short length = song.getLength();
                 float speed  = song.getSpeed();
                 int durationSeconds = speed > 0 ? (int) (length / speed) : 0;
@@ -272,7 +272,7 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        musicManager.setVolume((byte) vol);
+        musicManager.setVolume(vol);
         sender.sendMessage("§aDefault volume set to §f" + vol + "§a. "
                 + "Only affects songs started after this change.");
         return true;

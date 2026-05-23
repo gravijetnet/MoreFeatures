@@ -21,6 +21,11 @@ import java.util.Set;
  * Detection principle: a legitimate block placement is always preceded (and
  * followed) by at least one flying packet. Two consecutive block-place packets
  * with no flying packet in between means the client is automating placements.
+ *
+ * Thread-safety: all mutable fields in this class are written and read
+ * exclusively on the player's Netty I/O thread, except for the volatile fields
+ * (bypassPermission, gameMode, worldServer) which are written on the main thread
+ * and read on the Netty thread.
  */
 public class AutoPlaceDecoder extends ChannelDuplexHandler {
 
@@ -28,7 +33,7 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
     private static final double HEIGHT     = 1.8;
     private static final double HALF_WIDTH = 0.6 / 2.0;
 
-    // Size of the FastPlace sliding window (must match AutoPlaceConfig.getFastPlaceWindow())
+    // Size of the FastPlace sliding window
     private static final int PLACE_WINDOW_SIZE = 10;
 
     // NMS protocol value for "right-click air / item use" — not a real face direction
@@ -93,14 +98,23 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
     );
 
     private final Player player;
+    // Resolved once at construction; safe to hold — NMS handle never changes for a session.
+    private final EntityPlayer entityPlayer;
     private final JavaPlugin plugin;
     private final AutoPlaceConfig config;
 
-    // Per-player mutable state — only ever touched by the Netty I/O thread for this player
+    // Volatile: written on the main thread (via updatePermission / updateGameMode /
+    // updateWorld), read on the Netty I/O thread. This avoids calling Bukkit API
+    // from the Netty thread (H3, H4, H5).
+    private volatile boolean bypassPermission;
+    private volatile GameMode gameMode;
+    private volatile WorldServer worldServer;
+
+    // Per-player mutable state — only ever touched by the Netty I/O thread for this player.
     private BlockPosition requestedBlock = new BlockPosition(0, 0, 0);
 
-    // BUG-20: replaced Bukkit Location with plain doubles to avoid sharing a mutable Bukkit
-    // object between the Netty I/O thread and the Bukkit main thread
+    // Replaced Bukkit Location with plain doubles to avoid sharing a mutable Bukkit
+    // object between the Netty I/O thread and the Bukkit main thread.
     private double locX, locY, locZ;
     private float  locYaw, locPitch;
 
@@ -110,28 +124,51 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
     private final long[] placeTimes = new long[PLACE_WINDOW_SIZE];
     private int placeTimeIndex = 0;
 
-    // BUG-18: track last-flag timestamp so flags decay after a quiet period
     private long lastFlagTime = 0;
-    private static final long FLAG_DECAY_MS = 10_000L; // reset flags after 10 s without violations
+    private static final long FLAG_DECAY_MS = 10_000L;
 
-    // Flag accumulator — incremented on each violation, used to suppress noisy punishments
     private int flags = 0;
 
-    // One-shot guard: the punishment command must fire at most once per session,
-    // otherwise every subsequent placement packet re-dispatches it (ban/command spam).
+    // One-shot guard: punishment fires at most once per session.
     private boolean punished = false;
 
+    // Must be called from the main thread (e.g. AutoPlaceListener.onJoin or inject()).
     public AutoPlaceDecoder(Player player, JavaPlugin plugin, AutoPlaceConfig config) {
-        this.player   = player;
-        this.plugin   = plugin;
-        this.config   = config;
-        // Snapshot initial location as plain primitives (BUG-20)
+        this.player       = player;
+        this.entityPlayer = ((CraftPlayer) player).getHandle();
+        this.plugin       = plugin;
+        this.config       = config;
+
+        // Snapshot main-thread state into volatile fields.
+        this.bypassPermission = player.hasPermission("morefeatures.autoplace.bypass");
+        this.gameMode         = player.getGameMode();
+        this.worldServer      = ((CraftWorld) player.getWorld()).getHandle();
+
         Location loc  = player.getLocation();
         this.locX     = loc.getX();
         this.locY     = loc.getY();
         this.locZ     = loc.getZ();
         this.locYaw   = loc.getYaw();
         this.locPitch = loc.getPitch();
+    }
+
+    // -----------------------------------------------------------------
+    //  Main-thread update hooks (called from AutoPlaceListener)
+    // -----------------------------------------------------------------
+
+    /** Call from the main thread when the player's permissions change. */
+    public void updatePermission() {
+        this.bypassPermission = player.hasPermission("morefeatures.autoplace.bypass");
+    }
+
+    /** Call from the main thread on PlayerGameModeChangeEvent. */
+    public void updateGameMode(GameMode gm) {
+        this.gameMode = gm;
+    }
+
+    /** Call from the main thread on PlayerChangedWorldEvent. */
+    public void updateWorld() {
+        this.worldServer = ((CraftWorld) player.getWorld()).getHandle();
     }
 
     // -----------------------------------------------------------------
@@ -142,7 +179,7 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         if (msg instanceof Packet) {
             boolean allow = handlePacket((Packet<?>) msg);
-            if (!allow) return; // swallow — block the packet
+            if (!allow) return;
         }
         super.channelRead(ctx, msg);
     }
@@ -161,11 +198,9 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
         return true;
     }
 
-    // Resets sentBlock on every movement tick — the critical sequencing reset
     private boolean handleFlying(PacketPlayInFlying packet) {
         sentBlock = false;
 
-        // BUG-20: write to plain-double fields, not a shared Bukkit Location object
         if (packet.g()) { // hasPos
             locX = packet.a();
             locY = packet.b();
@@ -180,53 +215,41 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
 
     @SuppressWarnings("deprecation")
     private boolean handleBlockPlace(PacketPlayInBlockPlace packet) {
-        // Bypass permission — skip entirely
-        if (player.hasPermission("morefeatures.autoplace.bypass")) return true;
+        // Read volatile snapshots — safe from the Netty thread.
+        if (bypassPermission) return true;
 
-        // Adventure / spectator modes don't legitimately place blocks
-        GameMode gm = player.getGameMode();
+        GameMode gm = gameMode;
         if (gm == GameMode.ADVENTURE || gm == GameMode.SPECTATOR) return true;
 
-        // getFace() == FACE_ITEM_USE means the player right-clicked air / used an item, not a real placement
         if (packet.getFace() == FACE_ITEM_USE) return true;
 
-        // Must be holding something
         ItemStack held = packet.getItemStack();
         if (held == null || held.getItem() == null) return true;
 
-        // Must be placing a block, not a non-block item
         if (!(held.getItem() instanceof ItemBlock)) return true;
-
-        // Slabs use their own placement logic; skip them to avoid false positives
         if (held.getItem() instanceof ItemStep) return true;
 
-        WorldServer worldServer = ((CraftWorld) player.getWorld()).getHandle();
+        // Use the cached volatile worldServer — written on the main thread via updateWorld().
+        WorldServer ws = worldServer;
         BlockPosition position = packet.a();
 
-        // Clicking on interactable blocks while standing (not sneaking) is normal interaction
-        if (isTargetInteractable(worldServer, position) && !player.isSneaking()) return true;
+        // entityPlayer.isSneaking() reads NMS state written by PacketPlayInEntityAction,
+        // which is processed on this same Netty I/O thread — safe to call here.
+        if (isTargetInteractable(ws, position) && !entityPlayer.isSneaking()) return true;
 
-        // Determine the position where the new block would be placed
         EnumDirection direction = EnumDirection.fromType1(packet.getFace());
         BlockPosition shifted = position.shift(direction);
 
-        // If the target cell is not air the block cannot be placed — ignore
-        if (worldServer.getType(shifted).getBlock() != Blocks.AIR) return true;
+        if (ws.getType(shifted).getBlock() != Blocks.AIR) return true;
 
-        // Duplicate-position guard: same position as the last accepted request means
-        // the client is just re-confirming the same placement — let it through
         if (requestedBlock.equals(shifted)) return true;
         requestedBlock = shifted;
 
-        // Bounding-box guard: if the player's body already occupies that cell the
-        // placement is geometrically impossible for a real client — skip
         if (isPlayerInsideBlock(shifted)) return true;
 
         // ---- FASTPLACE DETECTION ----
-        // Record this placement timestamp in the ring buffer.
         long now = System.currentTimeMillis();
 
-        // BUG-18: decay flags after a quiet period so false lag-spike flags don't accumulate forever
         if (flags > 0 && (now - lastFlagTime) > FLAG_DECAY_MS) {
             flags = 0;
         }
@@ -234,20 +257,17 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
         placeTimes[placeTimeIndex] = now;
         placeTimeIndex = (placeTimeIndex + 1) % PLACE_WINDOW_SIZE;
 
-        // Oldest slot in the ring is the one we just overwrote — i.e. PLACE_WINDOW_SIZE placements ago.
         long oldest = placeTimes[placeTimeIndex];
         if (oldest != 0) {
             long windowMs = now - oldest;
-            // config: minimum ms allowed for PLACE_WINDOW_SIZE blocks (default 400 ms → 25 blocks/s)
             if (windowMs < config.getFastPlaceWindowMs()) {
                 flags++;
-                lastFlagTime = now; // BUG-18: update decay timestamp on every flag increment
-                // BUG-24: mark sentBlock so the AutoPlace path is not confused by skipped packets
+                lastFlagTime = now;
                 sentBlock = true;
                 if (flags >= config.getFlagThreshold()) {
-                    handleDetection(worldServer, position, shifted, "FastPlace");
+                    handleDetection(ws, position, shifted, "FastPlace");
                     if (config.shouldCancel()) {
-                        sendCancelPackets(worldServer, position, shifted);
+                        sendCancelPackets(ws, position, shifted);
                         return false;
                     }
                 }
@@ -256,19 +276,17 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
         }
 
         // ---- AUTOPLACE DETECTION ----
-        // First block-place packet since the last flying packet → mark and allow.
-        // Second block-place packet without an intervening flying → AutoPlace detected.
         if (!sentBlock) {
             sentBlock = true;
             return true;
         }
 
         flags++;
-        lastFlagTime = now; // BUG-18
+        lastFlagTime = now;
         if (flags >= config.getFlagThreshold()) {
-            handleDetection(worldServer, position, shifted, "AutoPlace");
+            handleDetection(ws, position, shifted, "AutoPlace");
             if (config.shouldCancel()) {
-                sendCancelPackets(worldServer, position, shifted);
+                sendCancelPackets(ws, position, shifted);
                 return false;
             }
         }
@@ -281,20 +299,15 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
 
     private void handleDetection(WorldServer worldServer, BlockPosition position,
                                  BlockPosition shifted, String type) {
-        // Snapshot all state on the Netty thread before handing off to the main thread.
-        // player.getName() / getUniqueId() read cached fields and are safe off-thread,
-        // but we snapshot them here explicitly so the lambda captures plain Strings,
-        // not live Bukkit API references.
         final int flagSnapshot  = flags;
         final boolean doAlert   = config.shouldAlert();
         final boolean doPunish  = config.shouldPunish()
                 && flagSnapshot >= config.getPunishThreshold()
                 && !punished;
-        if (doPunish) punished = true; // one-shot — netty thread only, so safe
+        if (doPunish) punished = true;
 
         if (!doAlert && !doPunish) return;
 
-        // Build strings on the Netty thread using only cached/immutable player fields.
         final String playerName = player.getName();
         final String playerUuid = player.getUniqueId().toString();
         final String message    = doAlert  ? config.getAlertMessage(playerName, playerUuid, type, flagSnapshot) : null;
@@ -315,15 +328,16 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
         });
     }
 
-    private void sendCancelPackets(WorldServer worldServer, BlockPosition position, BlockPosition shifted) {
-        EntityPlayer entityPlayer = ((CraftPlayer) player).getHandle();
-        PlayerInventory inventory  = entityPlayer.inventory;
-        Container container        = entityPlayer.activeContainer;
-        Slot slot                  = container.getSlot(inventory, inventory.itemInHandIndex);
+    private void sendCancelPackets(WorldServer ws, BlockPosition position, BlockPosition shifted) {
+        PlayerInventory inventory = entityPlayer.inventory;
+        // Always use the player's own inventory container (defaultContainer), not activeContainer,
+        // so the slot index is correct regardless of whether a GUI is open (fixes M4).
+        Container container = entityPlayer.defaultContainer;
+        Slot slot = container.getSlot(inventory, inventory.itemInHandIndex);
 
         PlayerConnection connection = entityPlayer.playerConnection;
-        connection.sendPacket(new PacketPlayOutBlockChange(worldServer, position));
-        connection.sendPacket(new PacketPlayOutBlockChange(worldServer, shifted));
+        connection.sendPacket(new PacketPlayOutBlockChange(ws, position));
+        connection.sendPacket(new PacketPlayOutBlockChange(ws, shifted));
         if (slot != null) {
             connection.sendPacket(new PacketPlayOutSetSlot(container.windowId, slot.rawSlotIndex, inventory.getItemInHand()));
         }
@@ -335,13 +349,12 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
 
     @SuppressWarnings("deprecation")
     private static boolean isTargetInteractable(WorldServer worldServer, BlockPosition position) {
-        Block block    = worldServer.getType(position).getBlock();
+        Block block   = worldServer.getType(position).getBlock();
         Material material = Material.getMaterial(Block.getId(block));
         return material != null && INTERACTABLE_BLOCKS.contains(material);
     }
 
     private boolean isPlayerInsideBlock(BlockPosition shifted) {
-        // BUG-20: use plain-double fields instead of Bukkit Location
         AxisAlignedBB playerBox = new AxisAlignedBB(
                 locX - HALF_WIDTH, locY,          locZ - HALF_WIDTH,
                 locX + HALF_WIDTH, locY + HEIGHT, locZ + HALF_WIDTH);
@@ -349,6 +362,6 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
                 shifted.getX(),       shifted.getY(),       shifted.getZ(),
                 shifted.getX() + 1.0, shifted.getY() + 1.0, shifted.getZ() + 1.0);
 
-        return playerBox.b(blockBox); // NMS AxisAlignedBB.b() = intersects
+        return playerBox.b(blockBox);
     }
 }

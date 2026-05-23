@@ -30,7 +30,6 @@ public class PlayerListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onNetworkJoin(ProfileNetworkJoinEvent event) {
-        // BUG-10: guard against null databaseManager (sync disabled)
         if (plugin.getDatabaseManager() == null) return;
 
         UUID uuid = event.getUuid();
@@ -69,23 +68,21 @@ public class PlayerListener implements Listener {
     public void onPlayerQuit(PlayerQuitEvent event) {
         UUID uuid = event.getPlayer().getUniqueId();
 
-        // Final playtime sync before cancelling the timer
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
             if (plugin.getPlaytimeSync() != null) plugin.getPlaytimeSync().syncPlaytime(uuid);
         });
 
         plugin.cancelPlaytimeTimer(uuid);
-        // BUG-12: network-stats sync on quit is handled solely by onNetworkLeave to avoid double-write
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onNetworkLeave(ProfileNetworkLeaveEvent event) {
-        if (plugin.getDatabaseManager() == null) return; // BUG-10: sync may be disabled
+        if (plugin.getDatabaseManager() == null) return;
 
         UUID uuid = event.getUuid();
 
         plugin.getServer().getScheduler().runTaskLaterAsynchronously(plugin, () -> {
-            // BUG-13: deduplicated — setPlayerOnline is called once, then stats are synced if possible
+            if (plugin.getDatabaseManager() == null) return;
             plugin.getDatabaseManager().setPlayerOnline(uuid.toString(), false);
             Phoenix phoenix = Phoenix.getInstance();
             if (phoenix != null && phoenix.isApiEnabled()) plugin.syncNetworkStats(phoenix);

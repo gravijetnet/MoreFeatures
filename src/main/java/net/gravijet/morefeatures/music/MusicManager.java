@@ -39,7 +39,6 @@ public class MusicManager implements Listener {
     private volatile byte volume;
 
     private final Map<UUID, SongPlayer> activePlayers = new ConcurrentHashMap<>();
-    // BUG-36: tracks pending auto-stop task IDs so they can be cancelled if the song ends early
     private final Map<UUID, Integer> stopTasks = new ConcurrentHashMap<>();
 
     public MusicManager(JavaPlugin plugin, File songsFolder, byte volume) {
@@ -58,10 +57,8 @@ public class MusicManager implements Listener {
     @EventHandler
     public void onSongEnd(SongEndEvent event) {
         SongPlayer sp = event.getSongPlayer();
-        // BUG-27: use .equals() instead of == in case NoteBlockAPI wraps the instance
         activePlayers.entrySet().removeIf(entry -> {
             if (entry.getValue().equals(sp)) {
-                // BUG-36: cancel any pending auto-stop task for this player when the song ends naturally
                 cancelStopTask(entry.getKey());
                 return true;
             }
@@ -132,8 +129,6 @@ public class MusicManager implements Listener {
                     return;
                 }
 
-                // BUG-30: stop the old song and atomically replace it; if two concurrent
-                // playSongAsync calls race to this point the compute() is atomic so only one wins
                 activePlayers.compute(uuid, (id, existing) -> {
                     if (existing != null) {
                         try { existing.setPlaying(false); existing.destroy(); }
@@ -150,7 +145,7 @@ public class MusicManager implements Listener {
 
     public void stopSong(Player player) {
         UUID uuid = player.getUniqueId();
-        cancelStopTask(uuid); // BUG-36: cancel any pending auto-stop before stopping
+        cancelStopTask(uuid);
         stopSongInternal(uuid);
     }
 
@@ -170,7 +165,7 @@ public class MusicManager implements Listener {
     public void stopAll() {
         List<UUID> uuids = new ArrayList<>(activePlayers.keySet());
         for (UUID uuid : uuids) {
-            cancelStopTask(uuid); // BUG-36: clear any pending auto-stop tasks
+            cancelStopTask(uuid);
             stopSongInternal(uuid);
         }
         logger.info("Stopped all active songs (" + uuids.size() + " player(s)).");
@@ -196,11 +191,10 @@ public class MusicManager implements Listener {
     public String getRandomSong() {
         List<String> songs = getAvailableSongs();
         if (songs.isEmpty()) return null;
-        // BUG-28: ThreadLocalRandom avoids the synchronised shared Random in Math.random()
         return songs.get(ThreadLocalRandom.current().nextInt(songs.size()));
     }
 
-    public void setVolume(byte v) {
+    public void setVolume(int v) {
         this.volume = (byte) Math.max(1, Math.min(100, v));
     }
 

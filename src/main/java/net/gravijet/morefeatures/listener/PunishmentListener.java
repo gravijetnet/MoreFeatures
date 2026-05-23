@@ -18,7 +18,7 @@ public class PunishmentListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPunishment(ProfilePunishmentEvent event) {
-        if (plugin.getDatabaseManager() == null) return; // BUG-14: sync may be disabled
+        if (plugin.getDatabaseManager() == null) return;
         PunishmentType type = event.getPunishment().getPunishmentType();
 
         String statKey;
@@ -30,9 +30,9 @@ public class PunishmentListener implements Listener {
         }
 
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+            if (plugin.getDatabaseManager() == null) return;
             plugin.getDatabaseManager().incrementStat(statKey, 1L);
 
-            // Update network stats immediately — bans and kicks remove the player from the count
             Phoenix phoenix = Phoenix.getInstance();
             if (phoenix != null && phoenix.isApiEnabled()) {
                 plugin.syncNetworkStats(phoenix);

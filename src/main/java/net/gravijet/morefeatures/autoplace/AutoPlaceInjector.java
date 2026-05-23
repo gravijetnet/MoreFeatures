@@ -26,27 +26,33 @@ public class AutoPlaceInjector {
     }
 
     public void inject(Player player) {
-        // Re-injecting (reload, or onEnable looping online players while a join
-        // fires) would otherwise throw "Duplicate handler name" — clear first.
+        // Remove from the pipeline before removing from the map so that the event-loop
+        // removal task sees the correct state and a concurrent inject() cannot race
+        // past the guard and then have its handler removed by a stale removal task (H6).
         uninject(player);
 
         AutoPlaceDecoder decoder = new AutoPlaceDecoder(player, plugin, config);
-        decoders.put(player, decoder);
 
-        // BUG-26: pipeline mutations must run on the channel's own event loop to avoid
-        // ConcurrentModificationException when a packet arrives during insertion
         Channel channel = getChannel(player);
         if (channel.eventLoop().inEventLoop()) {
             channel.pipeline().addAfter("decoder", HANDLER_NAME, decoder);
+            decoders.put(player, decoder);
         } else {
-            channel.eventLoop().execute(() ->
-                    channel.pipeline().addAfter("decoder", HANDLER_NAME, decoder));
+            channel.eventLoop().execute(() -> {
+                channel.pipeline().addAfter("decoder", HANDLER_NAME, decoder);
+                // Store in map only after the handler is actually in the pipeline so
+                // uninject() cannot find the entry before the pipeline add completes.
+                decoders.put(player, decoder);
+            });
         }
     }
 
     public void uninject(Player player) {
-        decoders.remove(player);
-        // BUG-26: same — do pipeline removal on the event loop
+        // Remove from map first so no new packets are dispatched to the old decoder
+        // after we've started the removal.
+        AutoPlaceDecoder removed = decoders.remove(player);
+        if (removed == null) return; // nothing to remove
+
         Channel channel = getChannel(player);
         Runnable remove = () -> {
             ChannelPipeline pipeline = channel.pipeline();
@@ -59,6 +65,11 @@ public class AutoPlaceInjector {
         } else {
             channel.eventLoop().execute(remove);
         }
+    }
+
+    /** Returns the active decoder for a player, or null if not injected. */
+    public AutoPlaceDecoder getDecoder(Player player) {
+        return decoders.get(player);
     }
 
     private static Channel getChannel(Player player) {

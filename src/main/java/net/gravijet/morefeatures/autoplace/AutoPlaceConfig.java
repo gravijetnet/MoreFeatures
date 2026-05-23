@@ -76,10 +76,9 @@ public class AutoPlaceConfig {
 
     private static String applyPlaceholders(String s, String playerName, String playerUuid) {
         // Strip characters that could break or inject into a dispatched command.
-        // Player names on vanilla are [a-zA-Z0-9_], but proxy/plugin setups may be looser.
         String safeName = playerName.replaceAll("[^a-zA-Z0-9_]", "_");
-        // BUG-25: substitute %uuid% first so that a crafted player name containing "%uuid%"
-        // cannot cause double-substitution (safeName already strips %, but ordering is now correct)
+        // Substitute %uuid% before %player% to prevent double-substitution if a player name
+        // contained the literal string "%uuid%".
         return s.replace("%uuid%", playerUuid)
                 .replace("%player%", safeName);
     }

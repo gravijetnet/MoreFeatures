@@ -12,7 +12,6 @@ import java.util.logging.Logger;
 
 public class DatabaseManager {
 
-    // BUG-07: use UTC so timestamps are timezone-neutral across deployments
     private static final ZoneId STORE_ZONE = ZoneId.of("UTC");
 
     // -------------------------------------------------------------------------
@@ -211,7 +210,6 @@ public class DatabaseManager {
              ResultSet rs = ps.executeQuery()) {
 
             if (rs.next()) {
-                // BUG-05: use column index 1 — avoids driver case-sensitivity issues with column names
                 long val = rs.getLong(1);
                 return rs.wasNull() ? null : val;
             }
@@ -225,7 +223,6 @@ public class DatabaseManager {
 
     public void updateStat(String key, long value) {
         keyToColumn(key); // validate key
-        // BUG-06: use pre-built SQL constant so prepared-statement cache can reuse it
         String sql = UPDATE_STAT_SQL.get(key);
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -240,7 +237,6 @@ public class DatabaseManager {
 
     public void incrementStat(String key, long amount) {
         keyToColumn(key); // validate key
-        // BUG-06: use pre-built SQL constant
         String sql = INCREMENT_STAT_SQL.get(key);
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -313,7 +309,6 @@ public class DatabaseManager {
     }
 
     private static Timestamp now() {
-        // BUG-07: store in UTC so timestamps are consistent regardless of server timezone
         return Timestamp.valueOf(LocalDateTime.now(STORE_ZONE));
     }
 }

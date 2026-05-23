@@ -50,9 +50,6 @@ public class RickrollCommand implements CommandExecutor, TabCompleter {
             timeArg = null;
             targetingOthers = false;
         } else if (args.length == 1) {
-            // BUG-35: prefer online-player lookup first; only fall back to time parsing if no
-            // player is found. This avoids the ambiguity where a player named "30s" would be
-            // treated as a duration instead of a player name.
             Player found = Bukkit.getPlayer(args[0]);
             if (found != null) {
                 target = found;
@@ -128,9 +125,6 @@ public class RickrollCommand implements CommandExecutor, TabCompleter {
 
                     if (finalStopAfterSeconds > 0) {
                         long delayTicks = finalStopAfterSeconds * 20L;
-                        // BUG-36: register the task ID with MusicManager so it can be cancelled
-                        // if the song ends naturally before the timer fires, preventing the delayed
-                        // stop from killing whatever song the player is listening to next
                         int taskId = Bukkit.getScheduler().runTaskLater(
                                 musicManager.getPlugin(),
                                 () -> {

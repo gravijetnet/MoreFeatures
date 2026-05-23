@@ -57,7 +57,8 @@ public final class TimeParser {
         long total = hours * 3600L + minutes * 60L + seconds;
         if (total <= 0) {
             throw new IllegalArgumentException(
-                    "Time value must be greater than zero. Got: " + input);
+                    "Invalid time '" + input + "' — value must be greater than zero. "
+                    + "Use a unit suffix: e.g. 30s, 1m30s, 1h.");
         }
         return total;
     }
@@ -68,10 +69,8 @@ public final class TimeParser {
         try {
             return Long.parseLong(val);
         } catch (NumberFormatException e) {
-            // BUG-38: overflow (e.g. 99999999999h) silently returned 0 before; now it throws
-            // a user-readable error instead of producing a silent wrong result
             throw new IllegalArgumentException(
-                    "Time component too large to parse: '" + val + "'. Use smaller values.");
+                    "Time component too large: '" + val + "'. Use smaller values.");
         }
     }
 }

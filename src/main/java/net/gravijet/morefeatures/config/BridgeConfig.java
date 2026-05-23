@@ -8,8 +8,10 @@ import java.util.regex.Pattern;
 @Getter
 public class BridgeConfig {
 
-    // BUG-08: validate host/database to prevent JDBC URL parameter injection
-    private static final Pattern SAFE_HOST     = Pattern.compile("^[a-zA-Z0-9.\\-_]+$");
+    // Each DNS label: starts and ends with alphanumeric, hyphens only in the middle.
+    // Underscore allowed for non-standard but common hostnames (e.g. docker service names).
+    private static final Pattern SAFE_HOST     = Pattern.compile(
+            "^[a-zA-Z0-9]([a-zA-Z0-9\\-_]*[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9\\-_]*[a-zA-Z0-9])?)*$");
     private static final Pattern SAFE_DATABASE = Pattern.compile("^[a-zA-Z0-9_\\-]+$");
 
     private final String host;
@@ -34,8 +36,13 @@ public class BridgeConfig {
                     "database.name contains unsafe characters: " + rawDb);
         }
 
-        this.host              = rawHost;
-        this.port              = cfg.getInt("database.port", 3306);
+        this.host = rawHost;
+        int rawPort = cfg.getInt("database.port", 3306);
+        if (rawPort < 1 || rawPort > 65535) {
+            throw new IllegalArgumentException(
+                    "database.port is out of range (1-65535): " + rawPort);
+        }
+        this.port              = rawPort;
         this.database          = rawDb;
         this.username          = cfg.getString("database.username", "root");
         this.password          = cfg.getString("database.password", "");
@@ -45,7 +52,6 @@ public class BridgeConfig {
     }
 
     public String buildJdbcUrl() {
-        // BUG-09: removed &autoReconnect=true — deprecated, masks errors, HikariCP handles reconnection
         return "jdbc:mysql://" + host + ":" + port + "/" + database
                 + "?useSSL=" + useSSL
                 + (useSSL ? "" : "&allowPublicKeyRetrieval=true")

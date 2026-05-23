@@ -17,8 +17,9 @@ import java.util.logging.Logger;
  */
 public class SongDownloader {
 
-    private static final int CONNECT_TIMEOUT = 15_000;  // 15s
-    private static final int READ_TIMEOUT    = 60_000;  // 60s
+    private static final int  CONNECT_TIMEOUT  = 15_000;   // 15 s
+    private static final int  READ_TIMEOUT     = 60_000;   // 60 s
+    private static final long MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024; // 20 MB cap for NBS files
 
     private final Logger logger;
     private final File songsFolder;
@@ -45,7 +46,6 @@ public class SongDownloader {
         for (MusicConfig.SongEntry entry : config.getSongs()) {
             String filename = entry.getFilename();
 
-            // BUG-33: validate filename to prevent path traversal attacks
             if (!isSafeFilename(filename)) {
                 logger.warning("Skipping song with unsafe filename: " + filename);
                 continue;
@@ -58,17 +58,16 @@ public class SongDownloader {
             }
 
             String url = entry.getUrl();
-            logger.info("Downloading song: " + filename + " from " + url);
+            // Log only the filename, not the full URL, to avoid leaking tokens in log files.
+            logger.info("Downloading song: " + filename);
 
-            // BUG-34: use try/finally to ensure partial file is cleaned up even on non-IOException
             try {
                 downloadFile(url, target);
                 downloaded++;
-                logger.info("Downloaded song: " + filename + " (" + target.length() + " bytes)");
+                logger.info("Downloaded: " + filename + " (" + target.length() + " bytes)");
             } catch (Exception e) {
                 logger.log(Level.WARNING,
-                        "Failed to download song '" + filename + "' from " + url
-                        + " — " + e.getMessage());
+                        "Failed to download song '" + filename + "': " + e.getMessage());
                 if (target.exists() && !target.delete()) {
                     logger.warning("Could not delete partial download: " + target.getAbsolutePath());
                 }
@@ -78,7 +77,6 @@ public class SongDownloader {
         return downloaded;
     }
 
-    // BUG-33: same safe-filename logic as MusicManager to prevent path traversal on download
     private static boolean isSafeFilename(String name) {
         if (name == null || name.isEmpty()) return false;
         if (name.indexOf('/') >= 0 || name.indexOf('\\') >= 0) return false;
@@ -89,18 +87,17 @@ public class SongDownloader {
     /**
      * Downloads a single file from a URL to a local file.
      * Only http:// and https:// URLs are permitted. Redirects are disabled to prevent SSRF.
+     * Downloads are capped at MAX_DOWNLOAD_BYTES to prevent disk exhaustion.
      */
     private void downloadFile(String urlString, File destination) throws IOException {
         if (!urlString.startsWith("http://") && !urlString.startsWith("https://")) {
-            throw new IOException("Rejected non-HTTP URL (only http/https allowed): " + urlString);
+            throw new IOException("Rejected non-HTTP URL (only http/https allowed)");
         }
         URL url = new URL(urlString);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setConnectTimeout(CONNECT_TIMEOUT);
         conn.setReadTimeout(READ_TIMEOUT);
         conn.setRequestProperty("User-Agent", "MoreFeatures-Plugin/1.0");
-        // BUG-32: disabled redirect following to prevent SSRF; attacker-controlled URLs
-        // could redirect to internal network addresses
         conn.setInstanceFollowRedirects(false);
 
         try {
@@ -120,7 +117,13 @@ public class SongDownloader {
 
                 byte[] buffer = new byte[8192];
                 int bytesRead;
+                long totalRead = 0;
                 while ((bytesRead = in.read(buffer)) != -1) {
+                    totalRead += bytesRead;
+                    if (totalRead > MAX_DOWNLOAD_BYTES) {
+                        throw new IOException("Download exceeded size limit of "
+                                + (MAX_DOWNLOAD_BYTES / 1024 / 1024) + " MB");
+                    }
                     out.write(buffer, 0, bytesRead);
                 }
                 out.flush();

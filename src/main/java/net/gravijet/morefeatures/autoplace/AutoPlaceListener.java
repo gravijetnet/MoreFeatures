@@ -3,6 +3,8 @@ package net.gravijet.morefeatures.autoplace;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
+import org.bukkit.event.player.PlayerGameModeChangeEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 
@@ -22,5 +24,21 @@ public class AutoPlaceListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
         injector.uninject(event.getPlayer());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onGameModeChange(PlayerGameModeChangeEvent event) {
+        AutoPlaceDecoder decoder = injector.getDecoder(event.getPlayer());
+        if (decoder != null) {
+            decoder.updateGameMode(event.getNewGameMode());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onWorldChange(PlayerChangedWorldEvent event) {
+        AutoPlaceDecoder decoder = injector.getDecoder(event.getPlayer());
+        if (decoder != null) {
+            decoder.updateWorld();
+        }
     }
 }

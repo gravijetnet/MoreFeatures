@@ -53,12 +53,10 @@ public class FullbrightManager {
         applyMaxLight(chunk);
     }
 
-    private static final int CHUNKS_PER_TICK = 20; // BUG-41: process in batches to avoid freezing
+    private static final int CHUNKS_PER_TICK = 20; // process in batches to avoid stalling the main thread
 
     /** Called on plugin enable / toggle — processes every already-loaded chunk in batches. */
     public void relightAllLoaded() {
-        // BUG-41: collecting all chunks up front (main thread) then scheduling batched processing
-        // so no single tick processes more than CHUNKS_PER_TICK chunks
         java.util.List<Chunk> toProcess = new java.util.ArrayList<>();
         for (World world : plugin.getServer().getWorlds()) {
             toProcess.addAll(java.util.Arrays.asList(world.getLoadedChunks()));
@@ -79,10 +77,18 @@ public class FullbrightManager {
             int end = Math.min(offset + CHUNKS_PER_TICK, chunks.size());
             for (int i = offset; i < end; i++) {
                 Chunk chunk = chunks.get(i);
-                if (chunk.isLoaded()) {
+                // Force-load the chunk briefly so we can apply or revert lighting on it.
+                // This ensures chunks that unloaded between collection and this batch are
+                // still correctly reverted when fullbright is disabled (M3).
+                boolean wasLoaded = chunk.isLoaded();
+                if (!wasLoaded) chunk.load(false); // load without generating new terrain
+                try {
                     if (lightEnabled) applyMaxLight(chunk);
                     else revertLight(chunk);
                     chunk.getWorld().refreshChunk(chunk.getX(), chunk.getZ());
+                } finally {
+                    // Unload again if we loaded it ourselves, to avoid inflating memory.
+                    if (!wasLoaded) chunk.unload(false);
                 }
             }
             scheduleBatch(chunks, end, lightEnabled, total);
