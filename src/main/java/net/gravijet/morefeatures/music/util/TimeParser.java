@@ -37,6 +37,9 @@ public final class TimeParser {
      * @throws IllegalArgumentException if the input is blank or contains no
      *                                  recognised time components
      */
+    // Maximum permitted duration: 24 hours. Prevents long-overflow in tick calculations.
+    private static final long MAX_SECONDS = 86_400L;
+
     public static long parseSeconds(String input) {
         if (input == null || input.trim().isEmpty()) {
             throw new IllegalArgumentException("Time string must not be empty.");
@@ -54,11 +57,21 @@ public final class TimeParser {
         long minutes = parseGroup(m, 2);
         long seconds = parseGroup(m, 3);
 
+        // Guard against overflow before multiplying
+        if (hours > MAX_SECONDS / 3600 || minutes > MAX_SECONDS / 60 || seconds > MAX_SECONDS) {
+            throw new IllegalArgumentException(
+                    "Time '" + input + "' exceeds the maximum of 24h.");
+        }
+
         long total = hours * 3600L + minutes * 60L + seconds;
         if (total <= 0) {
             throw new IllegalArgumentException(
                     "Invalid time '" + input + "' — value must be greater than zero. "
                     + "Use a unit suffix: e.g. 30s, 1m30s, 1h.");
+        }
+        if (total > MAX_SECONDS) {
+            throw new IllegalArgumentException(
+                    "Time '" + input + "' exceeds the maximum of 24h.");
         }
         return total;
     }
@@ -67,7 +80,10 @@ public final class TimeParser {
         String val = m.group(group);
         if (val == null) return 0;
         try {
-            return Long.parseLong(val);
+            long v = Long.parseLong(val);
+            if (v < 0) throw new IllegalArgumentException(
+                    "Time component must not be negative: '" + val + "'.");
+            return v;
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException(
                     "Time component too large: '" + val + "'. Use smaller values.");

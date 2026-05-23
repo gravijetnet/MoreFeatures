@@ -54,6 +54,9 @@ public class AutoPlaceInjector {
         if (removed == null) return; // nothing to remove
 
         Channel channel = getChannel(player);
+        // Execute the pipeline removal synchronously on the event loop so that a
+        // subsequent inject() call (e.g. world change) cannot add the new handler
+        // before the old one has been removed — avoiding a "duplicate name" exception.
         Runnable remove = () -> {
             ChannelPipeline pipeline = channel.pipeline();
             if (pipeline.get(HANDLER_NAME) != null) {
@@ -63,6 +66,9 @@ public class AutoPlaceInjector {
         if (channel.eventLoop().inEventLoop()) {
             remove.run();
         } else {
+            // submitTo instead of execute: the returned future lets inject() schedule
+            // *after* this removal completes, but here we just need the ordering guarantee
+            // that the removal task is enqueued before any subsequent inject() task.
             channel.eventLoop().execute(remove);
         }
     }

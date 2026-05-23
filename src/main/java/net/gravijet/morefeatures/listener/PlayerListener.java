@@ -44,15 +44,17 @@ public class PlayerListener implements Listener {
             IProfile profile = profileHandler.getProfile(uuid);
             if (profile == null) return;
 
+            String profileName = profile.getName();
+            if (profileName == null || profileName.isEmpty()) return;
+
             IRank highestRank = profile.getHighestRank();
-            String rank = highestRank != null
-                    ? ChatColor.stripColor(highestRank.getDisplayName())
-                    : null;
+            String rankDisplayName = (highestRank != null) ? highestRank.getDisplayName() : null;
+            String rank = (rankDisplayName != null) ? ChatColor.stripColor(rankDisplayName) : null;
 
             Timestamp firstSeen = firstSeenFromPhoenix(loginHandler, uuid);
 
             plugin.getDatabaseManager().upsertPlayer(
-                    uuid.toString(), profile.getName(), rank, true, firstSeen);
+                    uuid.toString(), profileName, rank, true, firstSeen);
 
             plugin.syncNetworkStats(phoenix);
         });

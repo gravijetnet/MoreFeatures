@@ -3,6 +3,7 @@ package net.gravijet.morefeatures.config;
 import lombok.Getter;
 import org.bukkit.configuration.file.FileConfiguration;
 
+import java.util.logging.Logger;
 import java.util.regex.Pattern;
 
 @Getter
@@ -24,6 +25,10 @@ public class BridgeConfig {
     private final boolean useSSL;
 
     public BridgeConfig(FileConfiguration cfg) {
+        this(cfg, null);
+    }
+
+    public BridgeConfig(FileConfiguration cfg, Logger logger) {
         String rawHost = cfg.getString("database.host", "localhost");
         String rawDb   = cfg.getString("database.name", "bridge");
 
@@ -46,7 +51,18 @@ public class BridgeConfig {
         this.database          = rawDb;
         this.username          = cfg.getString("database.username", "root");
         this.password          = cfg.getString("database.password", "");
-        this.poolSize          = cfg.getInt("database.pool-size", 10);
+
+        if (logger != null && "root".equals(this.username) && this.password.isEmpty()) {
+            logger.warning("database.username/password are using default values (root / empty). "
+                    + "Change these in phoenix.yml before deploying to production.");
+        }
+
+        int rawPoolSize = cfg.getInt("database.pool-size", 10);
+        if (rawPoolSize < 1) {
+            throw new IllegalArgumentException(
+                    "database.pool-size must be at least 1, got: " + rawPoolSize);
+        }
+        this.poolSize          = rawPoolSize;
         this.syncIntervalTicks = cfg.getLong("sync.interval-ticks", 6000L);
         this.useSSL            = cfg.getBoolean("database.use-ssl", false);
     }

@@ -81,7 +81,10 @@ public class FullbrightManager {
                 // This ensures chunks that unloaded between collection and this batch are
                 // still correctly reverted when fullbright is disabled (M3).
                 boolean wasLoaded = chunk.isLoaded();
-                if (!wasLoaded) chunk.load(false); // load without generating new terrain
+                if (!wasLoaded && !chunk.load(false)) {
+                    // load without generating new terrain; skip if load fails
+                    continue;
+                }
                 try {
                     if (lightEnabled) applyMaxLight(chunk);
                     else revertLight(chunk);

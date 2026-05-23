@@ -79,7 +79,7 @@ public class Main extends JavaPlugin {
         saveResource("phoenix.yml", false);
         FileConfiguration phoenixCfg = YamlConfiguration.loadConfiguration(
                 new File(getDataFolder(), "phoenix.yml"));
-        bridgeConfig = new BridgeConfig(phoenixCfg);
+        bridgeConfig = new BridgeConfig(phoenixCfg, getLogger());
 
         try {
             databaseManager = new DatabaseManager(bridgeConfig, getLogger());
@@ -120,9 +120,8 @@ public class Main extends JavaPlugin {
         if (syncTask != null) {
             syncTask.cancel();
         }
-        // Cancel per-player playtime timers first, then all remaining plugin tasks.
-        // This must happen before closing the DB pool so no new async writes are submitted.
-        playtimeTasks.values().forEach(id -> getServer().getScheduler().cancelTask(id));
+        // Cancel all plugin tasks (including per-player playtime timers) before closing
+        // the DB pool so no new async writes are submitted after the pool shuts down.
         playtimeTasks.clear();
         getServer().getScheduler().cancelTasks(this);
         if (databaseManager != null) {
@@ -187,6 +186,9 @@ public class Main extends JavaPlugin {
         getServer().getScheduler().runTaskAsynchronously(this, () -> {
             int count = songDownloader.downloadMissing(musicConfig);
             if (count > 0) getLogger().info("Downloaded " + count + " new song(s).");
+            // Count available songs off the main thread to avoid blocking on directory I/O.
+            getLogger().info("Music system ready. "
+                    + musicManager.getAvailableSongs().size() + " song(s) available.");
         });
 
         // MusicManager registers SongEndEvent itself
@@ -212,8 +214,7 @@ public class Main extends JavaPlugin {
 
         getServer().getPluginManager().registerEvents(new MusicListener(musicManager), this);
 
-        getLogger().info("Music system initialised. "
-                + musicManager.getAvailableSongs().size() + " song(s) available.");
+        getLogger().info("Music system initialised.");
     }
 
     // -------------------------------------------------------------------------

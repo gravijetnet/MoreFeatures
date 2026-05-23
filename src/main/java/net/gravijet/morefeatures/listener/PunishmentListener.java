@@ -19,6 +19,7 @@ public class PunishmentListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPunishment(ProfilePunishmentEvent event) {
         if (plugin.getDatabaseManager() == null) return;
+        if (event.getPunishment() == null) return;
         PunishmentType type = event.getPunishment().getPunishmentType();
 
         String statKey;

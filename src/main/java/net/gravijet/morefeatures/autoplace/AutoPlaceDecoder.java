@@ -145,11 +145,13 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
         this.worldServer      = ((CraftWorld) player.getWorld()).getHandle();
 
         Location loc  = player.getLocation();
-        this.locX     = loc.getX();
-        this.locY     = loc.getY();
-        this.locZ     = loc.getZ();
-        this.locYaw   = loc.getYaw();
-        this.locPitch = loc.getPitch();
+        if (loc != null) {
+            this.locX     = loc.getX();
+            this.locY     = loc.getY();
+            this.locZ     = loc.getZ();
+            this.locYaw   = loc.getYaw();
+            this.locPitch = loc.getPitch();
+        }
     }
 
     // -----------------------------------------------------------------
@@ -252,18 +254,19 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
 
         if (flags > 0 && (now - lastFlagTime) > FLAG_DECAY_MS) {
             flags = 0;
+            lastFlagTime = 0;
         }
 
-        placeTimes[placeTimeIndex] = now;
+        // Advance the index first: the slot we are about to overwrite IS the oldest entry.
+        // Reading it before the overwrite gives us the correct window start time.
         placeTimeIndex = (placeTimeIndex + 1) % PLACE_WINDOW_SIZE;
-
         long oldest = placeTimes[placeTimeIndex];
+        placeTimes[placeTimeIndex] = now;
         if (oldest != 0) {
             long windowMs = now - oldest;
             if (windowMs < config.getFastPlaceWindowMs()) {
                 flags++;
                 lastFlagTime = now;
-                sentBlock = true;
                 if (flags >= config.getFlagThreshold()) {
                     handleDetection(ws, position, shifted, "FastPlace");
                     if (config.shouldCancel()) {
@@ -333,13 +336,15 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
         // Always use the player's own inventory container (defaultContainer), not activeContainer,
         // so the slot index is correct regardless of whether a GUI is open (fixes M4).
         Container container = entityPlayer.defaultContainer;
-        Slot slot = container.getSlot(inventory, inventory.itemInHandIndex);
 
         PlayerConnection connection = entityPlayer.playerConnection;
         connection.sendPacket(new PacketPlayOutBlockChange(ws, position));
         connection.sendPacket(new PacketPlayOutBlockChange(ws, shifted));
-        if (slot != null) {
-            connection.sendPacket(new PacketPlayOutSetSlot(container.windowId, slot.rawSlotIndex, inventory.getItemInHand()));
+        if (container != null) {
+            Slot slot = container.getSlot(inventory, inventory.itemInHandIndex);
+            if (slot != null) {
+                connection.sendPacket(new PacketPlayOutSetSlot(container.windowId, slot.rawSlotIndex, inventory.getItemInHand()));
+            }
         }
     }
 

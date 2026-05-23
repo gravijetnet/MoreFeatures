@@ -61,15 +61,22 @@ public class SongDownloader {
             // Log only the filename, not the full URL, to avoid leaking tokens in log files.
             logger.info("Downloading song: " + filename);
 
+            // Write to a .tmp file first; rename to the real name only on success.
+            // This prevents a failed/partial download from being mistaken for a valid
+            // file on the next server start (which would skip the download forever).
+            File tmp = new File(songsFolder, filename + ".tmp");
             try {
-                downloadFile(url, target);
+                downloadFile(url, tmp);
+                if (!tmp.renameTo(target)) {
+                    throw new IOException("Could not rename " + tmp.getName() + " to " + filename);
+                }
                 downloaded++;
                 logger.info("Downloaded: " + filename + " (" + target.length() + " bytes)");
             } catch (Exception e) {
                 logger.log(Level.WARNING,
                         "Failed to download song '" + filename + "': " + e.getMessage());
-                if (target.exists() && !target.delete()) {
-                    logger.warning("Could not delete partial download: " + target.getAbsolutePath());
+                if (tmp.exists() && !tmp.delete()) {
+                    logger.warning("Could not delete partial download: " + tmp.getAbsolutePath());
                 }
             }
         }
@@ -94,13 +101,15 @@ public class SongDownloader {
             throw new IOException("Rejected non-HTTP URL (only http/https allowed)");
         }
         URL url = new URL(urlString);
+        // Open the connection inside the try block so disconnect() always runs,
+        // even if any of the configuration calls below throw.
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setConnectTimeout(CONNECT_TIMEOUT);
-        conn.setReadTimeout(READ_TIMEOUT);
-        conn.setRequestProperty("User-Agent", "MoreFeatures-Plugin/1.0");
-        conn.setInstanceFollowRedirects(false);
-
         try {
+            conn.setConnectTimeout(CONNECT_TIMEOUT);
+            conn.setReadTimeout(READ_TIMEOUT);
+            conn.setRequestProperty("User-Agent", "MoreFeatures-Plugin/1.0");
+            conn.setInstanceFollowRedirects(false);
+
             int responseCode;
             try {
                 responseCode = conn.getResponseCode();

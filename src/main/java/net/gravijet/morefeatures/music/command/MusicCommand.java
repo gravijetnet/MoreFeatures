@@ -4,6 +4,7 @@ import net.gravijet.morefeatures.music.MusicConfig;
 import net.gravijet.morefeatures.music.MusicManager;
 import net.gravijet.morefeatures.music.util.SongDownloader;
 import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -70,7 +71,7 @@ public class MusicCommand implements CommandExecutor, TabCompleter {
             case "volume":
                 return handleVolume(sender, args);
             default:
-                sender.sendMessage("§cUnknown subcommand: /music " + sub);
+                sender.sendMessage("§cUnknown subcommand: /music " + ChatColor.stripColor(sub));
                 sendUsage(sender);
                 return true;
         }

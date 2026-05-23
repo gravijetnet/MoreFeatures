@@ -88,8 +88,9 @@ public class DatabaseManager {
         hikari.setJdbcUrl(config.buildJdbcUrl());
         hikari.setUsername(config.getUsername());
         hikari.setPassword(config.getPassword());
-        hikari.setMaximumPoolSize(config.getPoolSize());
-        hikari.setMinimumIdle(2);
+        int poolSize = Math.max(2, config.getPoolSize()); // ensure poolSize >= minimumIdle
+        hikari.setMaximumPoolSize(poolSize);
+        hikari.setMinimumIdle(Math.min(2, poolSize));
         hikari.setConnectionTimeout(5_000L);
         hikari.setIdleTimeout(300_000L);
         hikari.setMaxLifetime(600_000L);
@@ -203,8 +204,8 @@ public class DatabaseManager {
     // -------------------------------------------------------------------------
 
     public Long getStatValue(String key) {
-        keyToColumn(key); // validate key — throws if unknown
-        String sql = GET_STAT_SQL.get(key);
+        String col = keyToColumn(key); // validate key — throws if unknown
+        String sql = GET_STAT_SQL.get(col);
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(sql);
              ResultSet rs = ps.executeQuery()) {
@@ -222,8 +223,8 @@ public class DatabaseManager {
     }
 
     public void updateStat(String key, long value) {
-        keyToColumn(key); // validate key
-        String sql = UPDATE_STAT_SQL.get(key);
+        String col = keyToColumn(key); // validate key
+        String sql = UPDATE_STAT_SQL.get(col);
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
 
@@ -236,8 +237,8 @@ public class DatabaseManager {
     }
 
     public void incrementStat(String key, long amount) {
-        keyToColumn(key); // validate key
-        String sql = INCREMENT_STAT_SQL.get(key);
+        String col = keyToColumn(key); // validate key
+        String sql = INCREMENT_STAT_SQL.get(col);
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
 

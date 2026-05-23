@@ -56,14 +56,14 @@ public class RickrollCommand implements CommandExecutor, TabCompleter {
                 timeArg = null;
                 targetingOthers = !target.equals(sender);
             } else {
-                // No online player by that name — try to parse as a time string
-                boolean isTimeArg = false;
+                // No online player by that name — try to parse as a time string.
+                // Capture the parsed value to avoid parsing the same string twice later.
+                long parsedSeconds = -1;
                 try {
-                    TimeParser.parseSeconds(args[0]);
-                    isTimeArg = true;
+                    parsedSeconds = TimeParser.parseSeconds(args[0]);
                 } catch (IllegalArgumentException ignored) {}
 
-                if (isTimeArg) {
+                if (parsedSeconds > 0) {
                     if (!(sender instanceof Player)) {
                         sender.sendMessage("§cConsole must specify a player: /rickroll <player> [time]");
                         return true;

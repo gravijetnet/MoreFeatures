@@ -33,7 +33,8 @@ public class RankListener implements Listener {
         if (plugin.getDatabaseManager() == null) return;
         String uuid = profile.getUniqueId().toString();
         IRank rank = profile.getHighestRank();
-        String rankName = rank != null ? ChatColor.stripColor(rank.getDisplayName()) : null;
+        String rankDisplayName = (rank != null) ? rank.getDisplayName() : null;
+        String rankName = (rankDisplayName != null) ? ChatColor.stripColor(rankDisplayName) : null;
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
             if (plugin.getDatabaseManager() == null) return;
             plugin.getDatabaseManager().updatePlayerRank(uuid, rankName);

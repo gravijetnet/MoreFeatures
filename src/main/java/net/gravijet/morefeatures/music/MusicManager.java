@@ -129,13 +129,14 @@ public class MusicManager implements Listener {
                     return;
                 }
 
-                activePlayers.compute(uuid, (id, existing) -> {
-                    if (existing != null) {
-                        try { existing.setPlaying(false); existing.destroy(); }
-                        catch (Exception ignored) {}
-                    }
-                    return songPlayer;
-                });
+                // Swap out the old player without holding the CHM lock during the
+                // NoteBlockAPI destroy call — avoids a potential deadlock if NBAPI
+                // callbacks re-enter activePlayers.
+                SongPlayer previous = activePlayers.put(uuid, songPlayer);
+                if (previous != null) {
+                    try { previous.setPlaying(false); previous.destroy(); }
+                    catch (Exception ignored) {}
+                }
                 logger.info("Playing '" + filename + "' for " + player.getName()
                         + " (" + song.getLength() + " NBS ticks, speed=" + song.getSpeed() + ")");
                 if (onSuccess != null) onSuccess.run();

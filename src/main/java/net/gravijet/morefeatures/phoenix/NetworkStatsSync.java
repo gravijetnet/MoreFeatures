@@ -13,8 +13,8 @@ public class NetworkStatsSync {
 
     private final DatabaseManager databaseManager;
 
-    private long cachedTotalPlayers = 0L;
-    private long lastCountTime      = 0L;
+    private volatile long cachedTotalPlayers = 0L;
+    private volatile long lastCountTime      = 0L;
 
     public NetworkStatsSync(DatabaseManager databaseManager) {
         this.databaseManager = databaseManager;
