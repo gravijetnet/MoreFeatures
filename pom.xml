@@ -58,7 +58,7 @@
         <dependency>
             <groupId>com.github.koca2000</groupId>
             <artifactId>NoteBlockAPI</artifactId>
-            <version>1.4.4</version>
+            <version>1.6.2</version>
         </dependency>
 
         <!-- Lombok — compile-time only, generates getters/setters via @Getter etc. -->
