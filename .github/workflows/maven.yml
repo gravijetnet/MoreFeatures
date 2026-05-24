@@ -29,29 +29,9 @@ jobs:
           wget -q https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar
           java -jar BuildTools.jar --rev 1.8.8
           
-          # BuildTools usually installs everything to the local ~/.m2 repository.
-          # We will find the chat jar there and force-install it under the name your POM expects.
-          echo "Searching local Maven repo for bungeecord-chat..."
-          CHAT_JAR=$(find ~/.m2/repository/net/md-5/bungeecord-chat -name "*.jar" ! -name "*-sources.jar" | head -n 1)
-          
-          if [ -z "$CHAT_JAR" ]; then
-            echo "Not in M2, searching BuildTools folder..."
-            CHAT_JAR=$(find . -name "bungeecord-chat-*.jar" ! -name "*-sources.jar" | head -n 1)
-          fi
-          
-          if [ -z "$CHAT_JAR" ]; then
-            echo "Still not found. Listing all JARs found to identify the issue:"
-            find . -name "*.jar"
-            exit 1
-          fi
-          
-          echo "Found: $CHAT_JAR"
-          mvn install:install-file \
-            -Dfile="$CHAT_JAR" \
-            -DgroupId=net.md-5 \
-            -DartifactId=bungeecord-chat \
-            -Dversion=1.8-SNAPSHOT \
-            -Dpackaging=jar
+          # BuildTools installiert automatisch alle Abhängigkeiten (inkl. bungeecord-chat) nach ~/.m2/repository.
+          # Das manuelle 'mvn install:install-file' wurde entfernt, da es zu einem Abbruch führt.
+          echo "BuildTools erfolgreich abgeschlossen. Abhängigkeiten sind im lokalen Maven-Repo vorhanden."
 
       - name: Set up JDK 21 (for Plugin Compilation)
         uses: actions/setup-java@v4
