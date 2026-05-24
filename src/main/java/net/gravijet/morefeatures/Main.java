@@ -9,6 +9,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import net.gravijet.morefeatures.music.MusicConfig;
 import net.gravijet.morefeatures.music.MusicManager;
+import net.gravijet.morefeatures.music.NoteBlockAPIBootstrap;
 import net.gravijet.morefeatures.music.command.MusicCommand;
 import net.gravijet.morefeatures.music.command.RickrollCommand;
 import net.gravijet.morefeatures.music.listener.MusicListener;
@@ -180,6 +181,13 @@ public class Main extends JavaPlugin {
     // -------------------------------------------------------------------------
 
     private void initMusic() {
+        try {
+            NoteBlockAPIBootstrap.init(this);
+        } catch (Exception e) {
+            getLogger().severe("Failed to bootstrap NoteBlockAPI — music will not work: " + e.getMessage());
+            return;
+        }
+
         musicConfig = new MusicConfig(this);
         File songsFolder = new File(getDataFolder(), "songs");
         songDownloader = new SongDownloader(getLogger(), songsFolder);
