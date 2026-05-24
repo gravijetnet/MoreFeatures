@@ -3,7 +3,6 @@ version: 1.0.0
 main: net.gravijet.morefeatures.Main
 author: gravijet
 description: More features for example.invalid
-depend: [NoteBlockAPI]
 
 commands:
   bridgesync:
@@ -13,7 +12,6 @@ commands:
   music:
     description: Main music control hub
     aliases: [m]
-    permission: morefeatures.music.play
     usage: /music <play|stop|force|list|download|info>
   rickroll:
     description: Rickroll yourself or another player

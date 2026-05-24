@@ -57,6 +57,7 @@ public class FullbrightManager {
     public void relightChunk(Chunk chunk) {
         if (!enabled) return;
         applyMaxLight(chunk);
+        chunk.getWorld().refreshChunk(chunk.getX(), chunk.getZ());
     }
 
     private static final int CHUNKS_PER_TICK = 20; // process in batches to avoid stalling the main thread

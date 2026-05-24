@@ -59,6 +59,10 @@ public class SongDownloader {
 
             String url = entry.getUrl();
             // Log only the filename, not the full URL, to avoid leaking tokens in log files.
+            if (url.startsWith("http://")) {
+                logger.warning("Song '" + filename + "' is configured with a plain HTTP URL. "
+                        + "Use HTTPS to prevent MITM attacks on downloaded files.");
+            }
             logger.info("Downloading song: " + filename);
 
             // Write to a .tmp file first; rename to the real name only on success.

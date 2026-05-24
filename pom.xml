@@ -54,7 +54,7 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- NoteBlockAPI — server must have NoteBlockAPI.jar in plugins/ -->
+        <!-- NoteBlockAPI — shaded into the jar, no separate plugin required -->
         <dependency>
             <groupId>com.github.koca2000</groupId>
             <artifactId>NoteBlockAPI</artifactId>
@@ -126,6 +126,10 @@
                                 <relocation>
                                     <pattern>com.mysql</pattern>
                                     <shadedPattern>net.gravijet.morefeatures.libs.mysql</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>com.xxmicloxx.NoteBlockAPI</pattern>
+                                    <shadedPattern>net.gravijet.morefeatures.libs.noteblockapi</shadedPattern>
                                 </relocation>
                             </relocations>
                         </configuration>

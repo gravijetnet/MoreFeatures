@@ -94,8 +94,7 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
             Material.JUNGLE_DOOR,
             Material.ACACIA_DOOR,
             Material.DARK_OAK_DOOR,
-            Material.COMMAND,
-            Material.VINE
+            Material.COMMAND
     );
 
     private final Player player;
@@ -357,7 +356,9 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
         connection.sendPacket(new PacketPlayOutBlockChange(ws, position));
         connection.sendPacket(new PacketPlayOutBlockChange(ws, shifted));
         if (container != null) {
-            Slot slot = container.getSlot(inventory, inventory.itemInHandIndex);
+            // Hotbar slot N maps to container slot 36+N in the player's defaultContainer.
+            int containerSlotIndex = 36 + inventory.itemInHandIndex;
+            Slot slot = container.getSlot(containerSlotIndex);
             if (slot != null) {
                 connection.sendPacket(new PacketPlayOutSetSlot(container.windowId, slot.rawSlotIndex, inventory.getItemInHand()));
             }
