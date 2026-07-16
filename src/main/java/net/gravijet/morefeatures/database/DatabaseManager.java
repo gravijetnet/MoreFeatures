@@ -307,7 +307,8 @@ public class DatabaseManager {
         }
     }
 
-    private Connection getConnection() throws SQLException {
+    /** Public so the link package can borrow the same pool rather than open a second one. */
+    public Connection getConnection() throws SQLException {
         return dataSource.getConnection();
     }
 

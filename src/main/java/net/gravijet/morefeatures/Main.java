@@ -25,6 +25,10 @@ import net.gravijet.morefeatures.fullbright.FullbrightManager;
 import net.gravijet.morefeatures.listener.PlayerListener;
 import net.gravijet.morefeatures.listener.PunishmentListener;
 import net.gravijet.morefeatures.listener.RankListener;
+import net.gravijet.morefeatures.link.CommandOverride;
+import net.gravijet.morefeatures.link.LinkCommand;
+import net.gravijet.morefeatures.link.LinkStore;
+import net.gravijet.morefeatures.link.UnlinkCommand;
 import net.gravijet.morefeatures.phoenix.NetworkStatsSync;
 import net.gravijet.morefeatures.phoenix.PlaytimeSync;
 import net.gravijet.morefeatures.task.SyncTask;
@@ -60,6 +64,9 @@ public class Main extends JavaPlugin {
     // AutoPlace detection system
     private AutoPlaceInjector autoPlaceInjector;
 
+    // Discord account linking (replaces Sync's /link and /unlink)
+    private LinkStore linkStore;
+
     private final Map<UUID, Integer> playtimeTasks = new ConcurrentHashMap<>();
 
     // -------------------------------------------------------------------------
@@ -93,6 +100,8 @@ public class Main extends JavaPlugin {
 
         playtimeSync = new PlaytimeSync(this, databaseManager);
         networkStatsSync = new NetworkStatsSync(databaseManager);
+
+        initLinking();
 
         getServer().getPluginManager().registerEvents(new PlayerListener(this),    this);
         getServer().getPluginManager().registerEvents(new PunishmentListener(this), this);
@@ -135,6 +144,52 @@ public class Main extends JavaPlugin {
     // -------------------------------------------------------------------------
     //  Fullbright
     // -------------------------------------------------------------------------
+
+    /**
+     * Discord account linking, taking /link and /unlink off Sync.
+     *
+     * Sync points those at a Nova panel on localhost:3000; ours points at
+     * example.invalid, which is where the ranks, applications and appeals now live.
+     * Sync itself is left alone — /sync and /verify still belong to it.
+     *
+     * This runs after the bridge pool is up because it borrows it, and one tick
+     * later than that because the takeover has to happen after Sync has actually
+     * registered. softdepend gets us enabled second; the delay covers the case
+     * where Sync registers its commands from a scheduled task rather than
+     * straight out of onEnable.
+     */
+    private void initLinking() {
+        linkStore = new LinkStore(databaseManager);
+        try {
+            linkStore.createTables();
+        } catch (SQLException e) {
+            getLogger().log(Level.SEVERE, "Could not create the link tables — /link is off.", e);
+            linkStore = null;
+            return;
+        }
+
+        final LinkCommand link = new LinkCommand(this, linkStore);
+        final UnlinkCommand unlink = new UnlinkCommand(this, linkStore);
+
+        getServer().getScheduler().runTask(this, () -> {
+            CommandOverride.take(this, "link", link, link,
+                    "Link your Minecraft account to Discord via example.invalid", "/link <code>");
+            CommandOverride.take(this, "unlink", unlink, unlink,
+                    "Unlink your Minecraft account from Discord", "/unlink");
+        });
+
+        // Unredeemed codes are guesses waiting to land, so they do not get to sit
+        // there forever. Hourly, off-thread, and a failure is worth a line but
+        // not a stack trace.
+        getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
+            try {
+                int purged = linkStore.purgeExpired();
+                if (purged > 0) getLogger().info("Purged " + purged + " expired link codes.");
+            } catch (SQLException e) {
+                getLogger().warning("Could not purge expired link codes: " + e.getMessage());
+            }
+        }, 20L * 60, 20L * 60 * 60);
+    }
 
     private void initFullbright() {
         boolean fbEnabled = getConfig().getBoolean("fullbright.enabled", false);

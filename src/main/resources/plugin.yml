@@ -1,6 +1,9 @@
 name: MoreFeatures
 version: 1.0.0
 main: net.gravijet.morefeatures.Main
+# Sync registers /link and /unlink at runtime, not in its plugin.yml, so the only
+# way to take them is to enable after it has and rewrite the command map.
+softdepend: [Sync, Phoenix]
 author: gravijet
 description: More features for example.invalid
 
@@ -21,6 +24,14 @@ commands:
     description: Toggle server-wide fullbright (max chunk lighting)
     permission: morefeatures.fullbright
     usage: /fullbright [on|off|toggle|status]
+  link:
+    description: Link your Minecraft account to Discord via example.invalid
+    permission: morefeatures.link
+    usage: /link <code>
+  unlink:
+    description: Unlink your Minecraft account from Discord
+    permission: morefeatures.link
+    usage: /unlink
 
 permissions:
   bridge.sync:
@@ -62,3 +73,6 @@ permissions:
   morefeatures.autoplace.alerts:
     description: Receive staff alerts when a player is flagged for AutoPlace
     default: op
+  morefeatures.link:
+    description: Use /link and /unlink
+    default: true
