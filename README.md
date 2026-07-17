@@ -1,6 +1,6 @@
 # MoreFeatures
 
-A Minecraft 1.8.8 plugin providing music playback, fullbright, anti-autoplace detection, and a PhoenixAPI–MySQL bridge.
+A Minecraft 1.8.8 plugin providing fullbright, anti-autoplace detection, and a PhoenixAPI–MySQL bridge.
 
 ---
 
@@ -18,9 +18,7 @@ A Minecraft 1.8.8 plugin providing music playback, fullbright, anti-autoplace de
 
 | Feature | Description |
 |---------|-------------|
-| **Music** | Play NoteBlock songs (`.nbs` files) for players, with volume control and auto-download |
-| **Rickroll** | Force-play "Never Gonna Give You Up" on a player for a set duration |
-| **Fullbright** | Set all chunks to maximum light level server-side |
+| **Fullbright** | Max light level server-wide, or night vision for a single player |
 | **Anti-AutoPlace** | Detect and punish players placing blocks suspiciously fast |
 | **PhoenixAPI Bridge** | Sync playtime, ranks, and punishment stats to a MySQL database |
 
@@ -28,50 +26,28 @@ A Minecraft 1.8.8 plugin providing music playback, fullbright, anti-autoplace de
 
 ## Commands
 
-### `/music`
-**Aliases:** `/m`
+### `/fullbright`
 
-Control NoteBlock song playback.
+Two independent modes.
 
-| Subcommand | Description | Permission |
-|-----------|-------------|------------|
-| `/music play [song]` | Play a random song, or a specific song by name | `morefeatures.music.play` |
-| `/music stop` | Stop your currently playing song | `morefeatures.music.stop` |
-| `/music force <player> [song]` | Force a song to play for another player | `morefeatures.music.force` |
-| `/music list` | List all available songs | `morefeatures.music.list` |
-| `/music info` | Show which song is currently playing for you | `morefeatures.music.info` |
-| `/music volume [1-100]` | Get or set your default playback volume | `morefeatures.music.volume` |
-| `/music download` | Manually trigger a re-download of configured songs | `morefeatures.music.download` |
-
----
-
-### `/rickroll [player] [time]`
-
-Play "Never Gonna Give You Up" on a player, optionally stopping after a set time.
-
-**Time format:** Combine `h` (hours), `m` (minutes), `s` (seconds) — e.g. `30s`, `1m30s`, `1h`, `2m`
+**Server-wide** — all loaded chunks are forced to maximum light level for every player.
 
 | Usage | Description |
 |-------|-------------|
-| `/rickroll` | Rickroll yourself indefinitely |
-| `/rickroll 30s` | Rickroll yourself for 30 seconds |
-| `/rickroll <player>` | Rickroll another player indefinitely |
-| `/rickroll <player> 1m30s` | Rickroll another player for 1 minute 30 seconds |
+| `/fullbright on` | Enable server-wide fullbright |
+| `/fullbright off` | Disable server-wide fullbright |
+| `/fullbright toggle` | Toggle it (default if no argument given) |
+| `/fullbright status` | Show whether it is currently enabled |
 
-> Console must specify a player: `/rickroll <player> [time]`
+**Per player** — gives one player endless night vision, which admins can hand out to anyone. Requires `morefeatures.fullbright.others` when the target is someone else.
 
----
+| Usage | Description |
+|-------|-------------|
+| `/fullbright <player>` | Toggle fullbright for that player |
+| `/fullbright <player> on\|off` | Turn it on or off for that player |
+| `/fullbright <player> status` | Show whether that player has it |
 
-### `/fullbright [on|off|toggle|status]`
-
-Control server-side fullbright. When enabled, all loaded chunks are forced to maximum light level for every player.
-
-| Subcommand | Description |
-|-----------|-------------|
-| `on` | Enable fullbright |
-| `off` | Disable fullbright |
-| `toggle` | Toggle fullbright (default if no argument given) |
-| `status` | Show whether fullbright is currently enabled |
+> A per-player grant lives in memory only. It survives a reconnect but is dropped when the server restarts.
 
 ---
 
@@ -83,30 +59,12 @@ Force an immediate sync of PhoenixAPI data (playtime, network stats) to the MySQ
 
 ## Permissions
 
-### Music
-
-| Permission | Description | Default |
-|-----------|-------------|---------|
-| `morefeatures.music.play` | Play songs for yourself | everyone |
-| `morefeatures.music.stop` | Stop your own song | everyone |
-| `morefeatures.music.list` | List available songs | everyone |
-| `morefeatures.music.info` | View what is currently playing | everyone |
-| `morefeatures.music.volume` | Change your playback volume | everyone |
-| `morefeatures.music.force` | Force-play a song for another player | op |
-| `morefeatures.music.download` | Trigger a manual song download | op |
-
-### Rickroll
-
-| Permission | Description | Default |
-|-----------|-------------|---------|
-| `morefeatures.rickroll` | Rickroll yourself | everyone |
-| `morefeatures.rickroll.others` | Rickroll other players | op |
-
 ### Fullbright
 
 | Permission | Description | Default |
 |-----------|-------------|---------|
-| `morefeatures.fullbright` | Toggle fullbright via `/fullbright` | op |
+| `morefeatures.fullbright` | Use `/fullbright` at all, and toggle it server-wide | op |
+| `morefeatures.fullbright.others` | Toggle fullbright for another player | op |
 
 ### Anti-AutoPlace
 
@@ -129,7 +87,7 @@ Force an immediate sync of PhoenixAPI data (playtime, network stats) to the MySQ
 
 ```yaml
 phoenix-mysql:
-  enabled: false    # Enable the PhoenixAPI → MySQL bridge
+  enabled: true     # Enable the PhoenixAPI → MySQL bridge
 
 fullbright:
   enabled: true     # Enable the fullbright system on startup
@@ -137,22 +95,6 @@ fullbright:
 autoplace:
   enabled: true     # Enable AutoPlace detection
 ```
-
----
-
-### `music.yml` — Music settings
-
-```yaml
-rickroll_file: "NeverGonnaGiveYouUp.nbs"   # Song file used by /rickroll
-
-volume: 80    # Default playback volume (1–100)
-
-songs:
-  - url: "https://example.com/song.nbs"    # Remote URL to download the file from
-    filename: "Song.nbs"                   # Local filename to save it as
-```
-
-Songs listed under `songs` are downloaded automatically on plugin startup. Use `/music download` to re-download them manually.
 
 ---
 
@@ -191,6 +133,7 @@ database:
   username: "phoenixbridge"
   password: "phoenixbridge"
   pool-size: 10
+  use-ssl: false         # Encrypt the connection to the database server
 
 sync:
   interval-ticks: 6000   # How often to sync (20 ticks = 1 second, 6000 = 5 minutes)
@@ -201,5 +144,4 @@ sync:
 ## Requirements
 
 - **Minecraft server:** 1.8.8 (Paper/Spigot)
-- **NoteBlockAPI:** Required for music features — add as a plugin on your server. If not present, music commands are disabled.
 - **MySQL database:** Required only if `phoenix-mysql.enabled: true` in `config.yml`

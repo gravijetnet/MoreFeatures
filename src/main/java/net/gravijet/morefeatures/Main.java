@@ -7,13 +7,6 @@ import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
-import net.gravijet.morefeatures.music.MusicConfig;
-import net.gravijet.morefeatures.music.MusicManager;
-import net.gravijet.morefeatures.music.NoteBlockAPIBootstrap;
-import net.gravijet.morefeatures.music.command.MusicCommand;
-import net.gravijet.morefeatures.music.command.RickrollCommand;
-import net.gravijet.morefeatures.music.listener.MusicListener;
-import net.gravijet.morefeatures.music.util.SongDownloader;
 import net.gravijet.morefeatures.config.BridgeConfig;
 import net.gravijet.morefeatures.database.DatabaseManager;
 import net.gravijet.morefeatures.autoplace.AutoPlaceConfig;
@@ -53,11 +46,6 @@ public class Main extends JavaPlugin {
     private NetworkStatsSync networkStatsSync;
     private SyncTask syncTask;
 
-    // Music system
-    private MusicConfig musicConfig;
-    private MusicManager musicManager;
-    private SongDownloader songDownloader;
-
     // Fullbright system
     private FullbrightManager fullbrightManager;
 
@@ -75,12 +63,16 @@ public class Main extends JavaPlugin {
     public void onEnable() {
         saveDefaultConfig();
 
-        initMusic();
         initFullbright();
         initAutoPlace();
 
-        if (!getConfig().getBoolean("phoenix-mysql.enabled", false)) {
-            getLogger().info("Phoenix→MySQL sync is disabled in config.yml — plugin idle.");
+        // Defaults to on when the key is absent. An existing config.yml is never
+        // rewritten by saveDefaultConfig(), so a server that predates this default
+        // still carries enabled: false — warn rather than log at info, because the
+        // symptom (an empty database) otherwise looks like a connection problem.
+        if (!getConfig().getBoolean("phoenix-mysql.enabled", true)) {
+            getLogger().warning("phoenix-mysql.enabled is false in config.yml — "
+                    + "nothing will be written to the database. Set it to true to turn the bridge on.");
             return;
         }
 
@@ -124,8 +116,8 @@ public class Main extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        if (musicManager != null) {
-            musicManager.stopAll();
+        if (fullbrightManager != null) {
+            fullbrightManager.clearAllPersonal();
         }
         if (syncTask != null) {
             syncTask.cancel();
@@ -229,59 +221,6 @@ public class Main extends JavaPlugin {
         }
         getServer().getPluginManager().registerEvents(new AutoPlaceListener(autoPlaceInjector), this);
         getLogger().info("AutoPlace detection enabled.");
-    }
-
-    // -------------------------------------------------------------------------
-    //  Music
-    // -------------------------------------------------------------------------
-
-    private void initMusic() {
-        try {
-            NoteBlockAPIBootstrap.init(this);
-        } catch (Exception e) {
-            getLogger().severe("Failed to bootstrap NoteBlockAPI — music will not work: " + e.getMessage());
-            return;
-        }
-
-        musicConfig = new MusicConfig(this);
-        File songsFolder = new File(getDataFolder(), "songs");
-        songDownloader = new SongDownloader(getLogger(), songsFolder);
-
-        // BUG-01 fix: assign musicManager before scheduling the async task so the
-        // lambda can safely call musicManager.getAvailableSongs().
-        musicManager = new MusicManager(this, songsFolder, musicConfig.getVolume());
-
-        getServer().getScheduler().runTaskAsynchronously(this, () -> {
-            int count = songDownloader.downloadMissing(musicConfig);
-            if (count > 0) getLogger().info("Downloaded " + count + " new song(s).");
-            // Count available songs off the main thread to avoid blocking on directory I/O.
-            getLogger().info("Music system ready. "
-                    + musicManager.getAvailableSongs().size() + " song(s) available.");
-        });
-
-        // MusicManager registers SongEndEvent itself
-
-        MusicCommand musicCmd = new MusicCommand(musicManager, songDownloader, musicConfig);
-        org.bukkit.command.PluginCommand musicCommand = getCommand("music");
-        if (musicCommand != null) {
-            musicCommand.setExecutor(musicCmd);
-            musicCommand.setTabCompleter(musicCmd);
-        } else {
-            getLogger().severe("Command 'music' not registered in plugin.yml — music command unavailable.");
-        }
-
-        RickrollCommand rickrollCmd = new RickrollCommand(musicManager, musicConfig);
-        org.bukkit.command.PluginCommand rickrollCommand = getCommand("rickroll");
-        if (rickrollCommand != null) {
-            rickrollCommand.setExecutor(rickrollCmd);
-            rickrollCommand.setTabCompleter(rickrollCmd);
-        } else {
-            getLogger().severe("Command 'rickroll' not registered in plugin.yml — rickroll command unavailable.");
-        }
-
-        getServer().getPluginManager().registerEvents(new MusicListener(musicManager), this);
-
-        getLogger().info("Music system initialised.");
     }
 
     // -------------------------------------------------------------------------

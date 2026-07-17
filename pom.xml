@@ -23,10 +23,6 @@
             <id>refine-public</id>
             <url>https://maven.refinedev.xyz/public-repo/</url>
         </repository>
-        <repository>
-            <id>jitpack</id>
-            <url>https://jitpack.io</url>
-        </repository>
     </repositories>
 
     <dependencies>
@@ -52,13 +48,6 @@
             <artifactId>pxAPI</artifactId>
             <version>2.0</version>
             <scope>provided</scope>
-        </dependency>
-
-        <!-- NoteBlockAPI — shaded into the jar, no separate plugin required -->
-        <dependency>
-            <groupId>com.github.koca2000</groupId>
-            <artifactId>NoteBlockAPI</artifactId>
-            <version>1.6.2</version>
         </dependency>
 
         <!-- Lombok — compile-time only, generates getters/setters via @Getter etc. -->
@@ -126,10 +115,6 @@
                                 <relocation>
                                     <pattern>com.mysql</pattern>
                                     <shadedPattern>net.gravijet.morefeatures.libs.mysql</shadedPattern>
-                                </relocation>
-                                <relocation>
-                                    <pattern>com.xxmicloxx.NoteBlockAPI</pattern>
-                                    <shadedPattern>net.gravijet.morefeatures.libs.noteblockapi</shadedPattern>
                                 </relocation>
                             </relocations>
                         </configuration>

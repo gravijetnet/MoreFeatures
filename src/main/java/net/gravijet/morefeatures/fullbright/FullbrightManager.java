@@ -5,15 +5,28 @@ import net.minecraft.server.v1_8_R3.NibbleArray;
 import org.bukkit.Chunk;
 import org.bukkit.World;
 import org.bukkit.craftbukkit.v1_8_R3.CraftChunk;
+import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 
 import java.util.Arrays;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
 
 /**
- * Applies maximum sky-light and block-light to every chunk section via NMS.
- * Relighting is done once per chunk load; already-loaded chunks are relit
+ * Two independent fullbright modes:
+ *
+ * Server-wide — applies maximum sky-light and block-light to every chunk section
+ * via NMS. Relighting is done once per chunk load; already-loaded chunks are relit
  * on enable and reverted on disable/toggle-off.
+ *
+ * Per player — an endless night-vision effect on one player only, which admins can
+ * hand out with /fullbright &lt;player&gt;. Held in memory and never persisted: the set
+ * dies with the server, and the effect is stripped on quit so it cannot be saved
+ * into playerdata and outlive a restart.
  */
 public class FullbrightManager {
 
@@ -25,6 +38,7 @@ public class FullbrightManager {
 
     private final JavaPlugin plugin;
     private final Logger logger;
+    private final Set<UUID> personal = ConcurrentHashMap.newKeySet();
     private volatile boolean enabled;
     // BUG-26 fix: track whether fullbright has ever been switched on so that
     // calling setEnabled(false) before any enable does not revert lighting on
@@ -52,6 +66,62 @@ public class FullbrightManager {
         this.enabled = value;
         relightAllLoaded();
     }
+
+    // -----------------------------------------------------------------
+    //  Per-player fullbright
+    // -----------------------------------------------------------------
+
+    public boolean isPersonalEnabled(UUID uuid) {
+        return personal.contains(uuid);
+    }
+
+    /** Turns per-player fullbright on or off for one player. Main thread only. */
+    public void setPersonalEnabled(Player player, boolean value) {
+        if (value) {
+            personal.add(player.getUniqueId());
+            applyNightVision(player);
+        } else {
+            personal.remove(player.getUniqueId());
+            player.removePotionEffect(PotionEffectType.NIGHT_VISION);
+        }
+    }
+
+    /** Re-applies the effect to a player who reconnected within the same server run. */
+    public void restorePersonal(Player player) {
+        if (personal.contains(player.getUniqueId())) {
+            applyNightVision(player);
+        }
+    }
+
+    /**
+     * Strips the effect on quit while keeping the player flagged, so a reconnect
+     * restores it but a shutdown does not leave night vision saved in playerdata.
+     */
+    public void suspendPersonal(Player player) {
+        if (personal.contains(player.getUniqueId())) {
+            player.removePotionEffect(PotionEffectType.NIGHT_VISION);
+        }
+    }
+
+    /** Drops every per-player grant. Called on disable so nothing survives a restart. */
+    public void clearAllPersonal() {
+        for (Player player : plugin.getServer().getOnlinePlayers()) {
+            if (personal.contains(player.getUniqueId())) {
+                player.removePotionEffect(PotionEffectType.NIGHT_VISION);
+            }
+        }
+        personal.clear();
+    }
+
+    private static void applyNightVision(Player player) {
+        // ambient = true keeps the screen tint faint, particles = false hides the swirls.
+        player.addPotionEffect(new PotionEffect(
+                PotionEffectType.NIGHT_VISION, Integer.MAX_VALUE, 0, true, false), true);
+    }
+
+    // -----------------------------------------------------------------
+    //  Server-wide fullbright
+    // -----------------------------------------------------------------
 
     /** Applies max lighting to all sections of a freshly loaded chunk. */
     public void relightChunk(Chunk chunk) {

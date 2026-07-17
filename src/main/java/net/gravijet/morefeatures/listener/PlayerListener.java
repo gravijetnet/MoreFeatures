@@ -7,6 +7,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import net.gravijet.morefeatures.Main;
+import net.gravijet.morefeatures.database.DatabaseManager;
 import xyz.refinedev.phoenix.Phoenix;
 import xyz.refinedev.phoenix.handler.ILoginHandler;
 import xyz.refinedev.phoenix.handler.IProfileHandler;
@@ -62,8 +63,23 @@ public class PlayerListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerJoin(PlayerJoinEvent event) {
-        plugin.startPlaytimeTimer(event.getPlayer().getUniqueId());
-        // Network stats sync on join is already handled by onNetworkJoin above
+        UUID uuid = event.getPlayer().getUniqueId();
+        String name = event.getPlayer().getName();
+
+        plugin.startPlaytimeTimer(uuid);
+
+        if (plugin.getDatabaseManager() == null) return;
+
+        // Baseline row from Bukkit alone. onNetworkJoin below is the richer path, but
+        // it gives up whenever the Phoenix profile is null or still cold, which left
+        // the player out of the database entirely. Rank and playtime stay untouched
+        // here; whichever of the two writes lands second does not clobber the other.
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+            DatabaseManager db = plugin.getDatabaseManager();
+            if (db == null) return;
+            db.upsertPlayerBasic(uuid.toString(), name, true);
+        });
+        // Network stats sync on join is handled by onNetworkJoin above
     }
 
     @EventHandler(priority = EventPriority.MONITOR)

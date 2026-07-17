@@ -2,10 +2,11 @@
 # Enable or disable each feature here.
 # Per-feature settings live in their own config files (e.g. antiautoplace.yml).
 
-# Sync player data from PhoenixAPI to a MySQL database.
+# Sync player data from PhoenixAPI to a MySQL/MariaDB database.
 # Connection settings are in phoenix.yml.
+# With this off, the plugin never opens the pool and nothing is ever written.
 phoenix-mysql:
-  enabled: false
+  enabled: true
 
 # Server-wide fullbright: forces all chunk sections to maximum sky/block light via NMS.
 # Toggle at runtime with /fullbright — requires morefeatures.fullbright (op).

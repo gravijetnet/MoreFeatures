@@ -59,6 +59,18 @@ public class DatabaseManager {
             + "   `first_seen` = LEAST(COALESCE(`first_seen`, VALUES(`first_seen`)), VALUES(`first_seen`)),"
             + "   `last_seen`  = VALUES(`last_seen`);";
 
+    // Same as UPSERT_PLAYER minus the rank, for the Bukkit-only join path where no
+    // Phoenix profile is available yet. Leaving `rank` out of both the insert and the
+    // update keeps a cold join from blanking a rank Phoenix already told us about.
+    private static final String UPSERT_PLAYER_BASIC =
+            "INSERT INTO `players` (`uuid`, `name`, `online`, `first_seen`, `last_seen`)"
+            + " VALUES (?, ?, ?, ?, ?)"
+            + " ON DUPLICATE KEY UPDATE"
+            + "   `name`       = VALUES(`name`),"
+            + "   `online`     = VALUES(`online`),"
+            + "   `first_seen` = LEAST(COALESCE(`first_seen`, VALUES(`first_seen`)), VALUES(`first_seen`)),"
+            + "   `last_seen`  = VALUES(`last_seen`);";
+
     private static final String SET_PLAYER_ONLINE =
             "UPDATE `players` SET `online` = ?, `last_seen` = ? WHERE `uuid` = ?;";
 
@@ -144,6 +156,29 @@ public class DatabaseManager {
 
         } catch (SQLException e) {
             logger.log(Level.WARNING, "Failed to upsert player " + uuid, e);
+        }
+    }
+
+    /**
+     * Writes the row a plain Bukkit join can fill on its own — no rank, no playtime.
+     * Phoenix's own join event enriches those when it arrives; the upsert's LEAST()
+     * keeps whichever first_seen is earlier, so seeding it with "now" here is safe
+     * even for a player whose real first_seen is years old.
+     */
+    public void upsertPlayerBasic(String uuid, String name, boolean online) {
+        Timestamp now = now();
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(UPSERT_PLAYER_BASIC)) {
+
+            ps.setString(1, uuid);
+            ps.setString(2, name);
+            ps.setBoolean(3, online);
+            ps.setTimestamp(4, now);
+            ps.setTimestamp(5, now);
+            ps.executeUpdate();
+
+        } catch (SQLException e) {
+            logger.log(Level.WARNING, "Failed to upsert base row for player " + uuid, e);
         }
     }
 

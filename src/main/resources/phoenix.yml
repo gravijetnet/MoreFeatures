@@ -9,6 +9,9 @@ database:
   password: "phoenixbridge"
   # Number of connections in the HikariCP pool.
   pool-size: 10
+  # Encrypt the connection to the database server. Leave false for a local
+  # database; turn it on when the server is reachable over a network.
+  use-ssl: false
 
 sync:
   # How often to run a drift-correction sync of network stats.

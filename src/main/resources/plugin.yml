@@ -12,18 +12,10 @@ commands:
     description: Forces an immediate Bridge sync
     permission: bridge.sync
     usage: /bridgesync
-  music:
-    description: Main music control hub
-    aliases: [m]
-    usage: /music <play|stop|force|list|download|info>
-  rickroll:
-    description: Rickroll yourself or another player
-    permission: morefeatures.rickroll
-    usage: /rickroll [player] <time>
   fullbright:
-    description: Toggle server-wide fullbright (max chunk lighting)
+    description: Toggle fullbright server-wide or for a single player
     permission: morefeatures.fullbright
-    usage: /fullbright [on|off|toggle|status]
+    usage: /fullbright [on|off|toggle|status] or /fullbright <player> [on|off|toggle]
   link:
     description: Link your Minecraft account to Discord via example.invalid
     permission: morefeatures.link
@@ -37,35 +29,11 @@ permissions:
   bridge.sync:
     description: Allows running /bridgesync
     default: op
-  morefeatures.music.play:
-    description: Play music for yourself
-    default: true
-  morefeatures.music.stop:
-    description: Stop your own music
-    default: true
-  morefeatures.music.list:
-    description: List available songs
-    default: true
-  morefeatures.music.info:
-    description: Show currently playing song info
-    default: true
-  morefeatures.music.volume:
-    description: Change default playback volume
-    default: true
-  morefeatures.music.force:
-    description: Force play music for other players
-    default: op
-  morefeatures.music.download:
-    description: Manually trigger song download
-    default: op
-  morefeatures.rickroll:
-    description: Rickroll yourself
-    default: true
-  morefeatures.rickroll.others:
-    description: Rickroll other players
-    default: op
   morefeatures.fullbright:
     description: Toggle server-wide fullbright via /fullbright
+    default: op
+  morefeatures.fullbright.others:
+    description: Toggle fullbright for another player
     default: op
   morefeatures.autoplace.bypass:
     description: Bypass AutoPlace detection entirely
