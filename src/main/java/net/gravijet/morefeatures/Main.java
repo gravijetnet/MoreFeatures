@@ -7,6 +7,7 @@ import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
+import net.gravijet.morefeatures.action.ActionQueue;
 import net.gravijet.morefeatures.config.BridgeConfig;
 import net.gravijet.morefeatures.database.DatabaseManager;
 import net.gravijet.morefeatures.autoplace.AutoPlaceConfig;
@@ -54,6 +55,7 @@ public class Main extends JavaPlugin {
 
     // Discord account linking (replaces Sync's /link and /unlink)
     private LinkStore linkStore;
+    private ActionQueue actionQueue;
 
     private final Map<UUID, Integer> playtimeTasks = new ConcurrentHashMap<>();
 
@@ -94,6 +96,7 @@ public class Main extends JavaPlugin {
         networkStatsSync = new NetworkStatsSync(databaseManager);
 
         initLinking();
+        initActionQueue();
 
         getServer().getPluginManager().registerEvents(new PlayerListener(this),    this);
         getServer().getPluginManager().registerEvents(new PunishmentListener(this), this);
@@ -181,6 +184,51 @@ public class Main extends JavaPlugin {
                 getLogger().warning("Could not purge expired link codes: " + e.getMessage());
             }
         }, 20L * 60, 20L * 60 * 60);
+    }
+
+    /**
+     * The queue Spielplatz drops work into. See ActionQueue for why the website
+     * asks rather than writes.
+     *
+     * Every server that runs this polls, and only one of them wins each job — so
+     * this needs no leader, no configuration, and no server nominated as the one
+     * that matters. A box being down is not a moderation outage.
+     */
+    private void initActionQueue() {
+        actionQueue = new ActionQueue(this, databaseManager, phoenixServerName());
+        try {
+            actionQueue.createTables();
+        } catch (SQLException | RuntimeException e) {
+            // RuntimeException too: the pool throws those, and this runs inside
+            // onEnable. A moderation queue that cannot start is a bad evening;
+            // one that takes /link and the anticheat down with it by throwing out
+            // of onEnable is a bad night.
+            getLogger().log(Level.SEVERE, "Could not create mod_actions — the website cannot punish anyone.", e);
+            actionQueue = null;
+            return;
+        }
+        // Every second. It is one indexed lookup against a table that is empty
+        // almost always, and the alternative is a moderator clicking Ban and
+        // watching nothing happen for half a minute.
+        getServer().getScheduler().runTaskTimerAsynchronously(this, () -> actionQueue.poll(), 100L, 20L);
+    }
+
+    /**
+     * What Phoenix calls this server.
+     *
+     * Read from the core's own global.yml rather than from Bukkit: this ends up
+     * in a punishment's `issuedOn`, and it should say exactly what every
+     * punishment issued in game on this box already says. Server.getServerName()
+     * would have been the obvious answer and is gone from the API these servers
+     * actually run on, whatever the 1.8.8 we compile against still offers.
+     */
+    private String phoenixServerName() {
+        File global = new File(getDataFolder().getParentFile(), "Phoenix/global.yml");
+        if (global.isFile()) {
+            String name = YamlConfiguration.loadConfiguration(global).getString("server.name");
+            if (name != null && !name.isEmpty()) return name;
+        }
+        return "unknown";
     }
 
     private void initFullbright() {
