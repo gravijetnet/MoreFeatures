@@ -8,6 +8,7 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import net.gravijet.morefeatures.action.ActionQueue;
+import net.gravijet.morefeatures.action.ConfigActionQueue;
 import net.gravijet.morefeatures.config.BridgeConfig;
 import net.gravijet.morefeatures.database.DatabaseManager;
 import net.gravijet.morefeatures.autoplace.AutoPlaceConfig;
@@ -68,6 +69,7 @@ public class Main extends JavaPlugin {
     // Discord account linking (replaces Sync's /link and /unlink)
     private LinkStore linkStore;
     private ActionQueue actionQueue;
+    private ConfigActionQueue configQueue;
 
     private final Map<UUID, Integer> playtimeTasks = new ConcurrentHashMap<>();
 
@@ -233,6 +235,19 @@ public class Main extends JavaPlugin {
         // almost always, and the alternative is a moderator clicking Ban and
         // watching nothing happen for half a minute.
         getServer().getScheduler().runTaskTimerAsynchronously(this, () -> actionQueue.poll(), 100L, 20L);
+
+        // The config queue is the same story for edits to ranks and ladders.
+        // Separate table, separate failure: a broken rank editor must not stop
+        // bans landing, so its own createTables is guarded on its own.
+        configQueue = new ConfigActionQueue(this, databaseManager, phoenixServerName());
+        try {
+            configQueue.createTables();
+        } catch (SQLException | RuntimeException e) {
+            getLogger().log(Level.SEVERE, "Could not create config_actions — the network editor is unavailable.", e);
+            configQueue = null;
+            return;
+        }
+        getServer().getScheduler().runTaskTimerAsynchronously(this, () -> configQueue.poll(), 120L, 20L);
     }
 
     /**
