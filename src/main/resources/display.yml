@@ -1,0 +1,67 @@
+# MoreFeatures — tablist, nametag and chat
+#
+# TAB draws the tablist and the nametags on this server. This file does not
+# change that: MoreFeatures resolves rank, tag and bedwars team from Phoenix and
+# MBedwars and publishes them to PlaceholderAPI, and TAB is pointed at those.
+# Two plugins writing scoreboard teams at once is what makes a name go white
+# with no prefix, so only one of them writes — TAB — and only one of them
+# decides — this.
+#
+# Placeholders published by this plugin:
+#
+#   %morefeatures_sortweight%  sort TAB on this — numeric, PLACEHOLDER_HIGH_TO_LOW
+#   %morefeatures_sortkey%     same ordering as a string, for PLACEHOLDER_A_TO_Z
+#   %morefeatures_prefix%      rank prefix, never empty
+#   %morefeatures_tabprefix%   playerlist prefix, falls back to the rank prefix
+#   %morefeatures_suffix%      rank suffix
+#   %morefeatures_namecolor%   team colour in a game, rank colour outside one
+#   %morefeatures_tag%         the player's Phoenix tag
+#   %morefeatures_teamcolor%   team colour, empty outside a game
+#   %morefeatures_ingame%      true / false
+#
+# Put this in TAB's config.yml — one sorting rule covers both worlds, because
+# the bedwars team colour is already built into the sort weight:
+#
+#   scoreboard-teams:
+#     enabled: true
+#     sorting-types:
+#       - "PLACEHOLDER_HIGH_TO_LOW:%morefeatures_sortweight%"
+#       - "PLACEHOLDER_A_TO_Z:%player%"
+#
+# The second line is only the tiebreaker for two players of the same rank in the
+# same team, so they do not swap places at random. Use %morefeatures_sortkey%
+# with PLACEHOLDER_A_TO_Z instead if you prefer string sorting — same order,
+# name tiebreak already included.
+#
+# and in groups.yml / the default group:
+#
+#   tabprefix: "%morefeatures_tabprefix%"
+#   tagprefix: "%morefeatures_prefix%"
+#   tabsuffix: "%morefeatures_suffix%"
+#   tagsuffix: "%morefeatures_suffix%"
+#   customtabname: "%morefeatures_namecolor%%player%"
+
+sorting:
+  # Whether a higher Phoenix priority number means a higher rank.
+  # Set to false if your ranks are numbered the other way round (1 = owner).
+  higher-priority-first: true
+
+prefix:
+  # Shown when Phoenix has no prefix for a player — during the first ticks of a
+  # login, or for a rank with none configured. An empty prefix is exactly what
+  # renders a name white with no rank, so this should never be blank.
+  fallback: "&7"
+
+chat:
+  # Only applies outside a bedwars arena. Inside one MBedwars keeps its own
+  # team and spectator chat and this plugin does not touch it.
+  enabled: true
+
+  # Tokens: <prefix> <suffix> <tag> <name> <message>
+  # Everything else goes through PlaceholderAPI.
+  # <message> is inserted last and is never read as a placeholder or a colour
+  # code, so players cannot inject either through chat.
+  format: "<prefix>%pxcosmetics_player_color%%phoenix_player_name%<suffix>%phoenix_player_tag%&7: %pxcosmetics_player_chat_color%<message>"
+
+  # Players with this permission may use &-colour codes in their own messages.
+  color-permission: "morefeatures.chat.color"

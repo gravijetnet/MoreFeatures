@@ -3,7 +3,7 @@ version: 1.0.0
 main: net.gravijet.morefeatures.Main
 # Sync registers /link and /unlink at runtime, not in its plugin.yml, so the only
 # way to take them is to enable after it has and rewrite the command map.
-softdepend: [Sync, Phoenix]
+softdepend: [Sync, Phoenix, PlaceholderAPI, MBedwars]
 author: gravijet
 description: More features for example.invalid
 
@@ -44,3 +44,6 @@ permissions:
   morefeatures.link:
     description: Use /link and /unlink
     default: true
+  morefeatures.chat.color:
+    description: Use &-colour codes in your own chat messages
+    default: op

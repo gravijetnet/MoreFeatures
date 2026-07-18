@@ -13,6 +13,12 @@ import net.gravijet.morefeatures.database.DatabaseManager;
 import net.gravijet.morefeatures.autoplace.AutoPlaceConfig;
 import net.gravijet.morefeatures.autoplace.AutoPlaceInjector;
 import net.gravijet.morefeatures.autoplace.AutoPlaceListener;
+import net.gravijet.morefeatures.chat.ChatListener;
+import net.gravijet.morefeatures.display.ArenaCache;
+import net.gravijet.morefeatures.display.ArenaLookup;
+import net.gravijet.morefeatures.display.DisplayConfig;
+import net.gravijet.morefeatures.display.DisplayExpansion;
+import net.gravijet.morefeatures.display.DisplayResolver;
 import net.gravijet.morefeatures.fullbright.FullbrightCommand;
 import net.gravijet.morefeatures.fullbright.FullbrightListener;
 import net.gravijet.morefeatures.fullbright.FullbrightManager;
@@ -53,6 +59,12 @@ public class Main extends JavaPlugin {
     // AutoPlace detection system
     private AutoPlaceInjector autoPlaceInjector;
 
+    // Tablist / nametag / chat, resolved from Phoenix and MBedwars
+    private DisplayConfig displayConfig;
+    private DisplayResolver displayResolver;
+    private DisplayExpansion displayExpansion;
+    private ArenaCache arenaCache;
+
     // Discord account linking (replaces Sync's /link and /unlink)
     private LinkStore linkStore;
     private ActionQueue actionQueue;
@@ -67,6 +79,7 @@ public class Main extends JavaPlugin {
 
         initFullbright();
         initAutoPlace();
+        initDisplay();
 
         // Defaults to on when the key is absent. An existing config.yml is never
         // rewritten by saveDefaultConfig(), so a server that predates this default
@@ -121,6 +134,15 @@ public class Main extends JavaPlugin {
     public void onDisable() {
         if (fullbrightManager != null) {
             fullbrightManager.clearAllPersonal();
+        }
+        // persist() keeps the expansion alive across a /papi reload, so it also
+        // has to be taken down explicitly here or a plugin reload leaves a dead
+        // one registered against the old classloader.
+        if (displayExpansion != null) {
+            displayExpansion.unregister();
+        }
+        if (arenaCache != null) {
+            arenaCache.stop();
         }
         if (syncTask != null) {
             syncTask.cancel();
@@ -269,6 +291,63 @@ public class Main extends JavaPlugin {
         }
         getServer().getPluginManager().registerEvents(new AutoPlaceListener(autoPlaceInjector), this);
         getLogger().info("AutoPlace detection enabled.");
+    }
+
+    // -------------------------------------------------------------------------
+    //  Display — tablist sorting, nametags, chat
+    // -------------------------------------------------------------------------
+
+    /**
+     * Rank, priority and bedwars team, resolved once and published to everyone
+     * who needs them.
+     *
+     * TAB renders the tablist and the nametags here, and it renders them with
+     * packets. A plugin that writes scoreboard teams alongside it loses that
+     * race intermittently, which is what a name flickering white with no prefix
+     * is. So this does not render anything — it answers TAB, and TAB draws. See
+     * display.yml for the TAB config that goes with it.
+     *
+     * Chat is ours, because TAB does not do chat. Only outside an arena though;
+     * MBedwars owns chat inside a game.
+     *
+     * Runs before the phoenix-mysql block below on purpose: the database bridge
+     * returning early must not take the tablist down with it.
+     */
+    private void initDisplay() {
+        if (!getConfig().getBoolean("display.enabled", true)) {
+            getLogger().info("Display (tablist/nametag/chat) disabled in config.yml.");
+            return;
+        }
+        if (getServer().getPluginManager().getPlugin("PlaceholderAPI") == null) {
+            getLogger().warning("PlaceholderAPI is not installed — tablist sorting, prefixes "
+                    + "and the chat format are off. Install it or set display.enabled to false.");
+            return;
+        }
+
+        displayConfig = new DisplayConfig(this);
+
+        // TAB refreshes placeholders asynchronously and chat arrives async, so
+        // MBedwars is read on a main-thread timer and everyone else reads the
+        // snapshot. See ArenaCache.
+        arenaCache = new ArenaCache(ArenaLookup.create(getLogger()));
+        arenaCache.start(this);
+
+        displayResolver = new DisplayResolver(arenaCache, displayConfig);
+
+        displayExpansion = new DisplayExpansion(this, displayResolver);
+        if (!displayExpansion.register()) {
+            getLogger().severe("PlaceholderAPI refused the %morefeatures_*% expansion — "
+                    + "TAB will have nothing to sort on.");
+            displayExpansion = null;
+        }
+
+        if (displayConfig.isChatEnabled()) {
+            getServer().getPluginManager().registerEvents(
+                    new ChatListener(displayResolver, displayConfig, getLogger()), this);
+        }
+
+        getLogger().info("Display initialised — %morefeatures_*% published to PlaceholderAPI"
+                + (displayConfig.isChatEnabled() ? ", lobby chat format active." : "."));
     }
 
     // -------------------------------------------------------------------------

@@ -17,3 +17,9 @@ fullbright:
 # Detection settings (alerts, punishments, cancel) are in antiautoplace.yml.
 autoplace:
   enabled: true
+
+# Tablist sorting, nametag prefixes and the chat format, all resolved from
+# Phoenix (rank, priority, tag) and MBedwars (team colour).
+# Settings, and the TAB config that goes with it, are in display.yml.
+display:
+  enabled: true
