@@ -8,6 +8,7 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import net.gravijet.morefeatures.action.ActionQueue;
+import net.gravijet.morefeatures.action.Broadcaster;
 import net.gravijet.morefeatures.action.ConfigActionQueue;
 import net.gravijet.morefeatures.config.BridgeConfig;
 import net.gravijet.morefeatures.database.DatabaseManager;
@@ -70,6 +71,7 @@ public class Main extends JavaPlugin {
     private LinkStore linkStore;
     private ActionQueue actionQueue;
     private ConfigActionQueue configQueue;
+    private Broadcaster broadcaster;
 
     private final Map<UUID, Integer> playtimeTasks = new ConcurrentHashMap<>();
 
@@ -248,6 +250,20 @@ public class Main extends JavaPlugin {
             return;
         }
         getServer().getScheduler().runTaskTimerAsynchronously(this, () -> configQueue.poll(), 120L, 20L);
+
+        // Announcements the website sends to the game. Fan-out, not a claim queue:
+        // every server shows each one once. Its own createTables so a failure here
+        // does not take the moderation queues down with it.
+        broadcaster = new Broadcaster(this, databaseManager);
+        try {
+            broadcaster.createTables();
+            broadcaster.initCursor();
+        } catch (SQLException | RuntimeException e) {
+            getLogger().log(Level.SEVERE, "Could not create network_broadcasts — announcements are unavailable.", e);
+            broadcaster = null;
+            return;
+        }
+        getServer().getScheduler().runTaskTimerAsynchronously(this, () -> broadcaster.poll(), 140L, 20L);
     }
 
     /**

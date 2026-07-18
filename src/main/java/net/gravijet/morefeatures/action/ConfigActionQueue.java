@@ -10,13 +10,18 @@ import xyz.refinedev.phoenix.profile.punishment.ladder.IPunishmentLadder;
 import xyz.refinedev.phoenix.profile.punishment.ladder.IPunishmentLadderType;
 import xyz.refinedev.phoenix.rank.IRank;
 import xyz.refinedev.phoenix.rank.permission.IPermission;
+import xyz.refinedev.phoenix.scope.IScope;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.logging.Level;
@@ -281,12 +286,13 @@ public class ConfigActionQueue {
                 }
                 case "perm+": {
                     if (rank.hasPermission(arg)) { changes.add("+" + arg); break; }
-                    IPermission found = findPermission(ranks, arg);
-                    if (found == null) {
-                        return "!" + arg + " is not on any rank yet — add it to one in game first, then copy it here";
-                    }
+                    // Prefer copying an object the core already made; only mint one
+                    // if the node lives nowhere yet.
+                    IPermission perm = findPermission(ranks, arg);
+                    if (perm == null) perm = mintPermission(ranks, arg);
+                    if (perm == null) return "!could not build the permission " + arg;
                     List<IPermission> perms = new ArrayList<>(rank.getPermissions());
-                    perms.add(found);
+                    perms.add(perm);
                     rank.setPermissions(perms);
                     changes.add("+" + arg);
                     break;
@@ -333,6 +339,91 @@ public class ConfigActionQueue {
             }
         }
         return null;
+    }
+
+    /**
+     * Builds a permission for a node no rank carries yet.
+     *
+     * The pxAPI hands out permissions but gives nothing to construct one, and the
+     * concrete class is inside the obfuscated core — so this is reflection, and it
+     * is the one place here that reaches past the public surface. It is written to
+     * fail cleanly (return null → the job fails with a message) rather than throw,
+     * and it never mutates anything until it has an object in hand.
+     *
+     * Three strategies, cheapest first: a (String, scopes) constructor, a (String)
+     * constructor, and — the one that works even against obfuscated names —
+     * allocate an instance, copy every field off a real permission, then overwrite
+     * whichever String field held the old node with the new one, found by value
+     * rather than by a name reflection cannot trust.
+     */
+    private IPermission mintPermission(IRankHandler ranks, String node) {
+        IPermission sample = anyPermission(ranks);
+        if (sample == null) return null; // nothing to learn the shape from — vanishingly unlikely
+        Class<?> cls = sample.getClass();
+        List<IScope> global = Collections.singletonList(ranks.getGlobalScope());
+
+        try {
+            Constructor<?> c = cls.getDeclaredConstructor(String.class, List.class);
+            c.setAccessible(true);
+            IPermission p = (IPermission) c.newInstance(node, global);
+            if (node.equalsIgnoreCase(p.getPermission())) return p;
+        } catch (Throwable ignored) { /* try the next shape */ }
+
+        try {
+            Constructor<?> c = cls.getDeclaredConstructor(String.class);
+            c.setAccessible(true);
+            IPermission p = (IPermission) c.newInstance(node);
+            try { p.setScopes(global); } catch (Throwable ignored) { /* leave default scope */ }
+            if (node.equalsIgnoreCase(p.getPermission())) return p;
+        } catch (Throwable ignored) { /* fall through to the field copy */ }
+
+        try {
+            IPermission p = (IPermission) allocate(cls);
+            for (Class<?> k = cls; k != null && k != Object.class; k = k.getSuperclass()) {
+                for (Field f : k.getDeclaredFields()) {
+                    if (Modifier.isStatic(f.getModifiers()) || Modifier.isFinal(f.getModifiers())) continue;
+                    f.setAccessible(true);
+                    f.set(p, f.get(sample));
+                }
+            }
+            overwriteStringField(p, sample.getPermission(), node);
+            try { p.setScopes(global); } catch (Throwable ignored) { /* keep copied scope */ }
+            if (node.equalsIgnoreCase(p.getPermission())) return p;
+        } catch (Throwable ignored) { /* out of strategies */ }
+
+        return null;
+    }
+
+    private IPermission anyPermission(IRankHandler ranks) {
+        for (IRank r : ranks.getSortedRanks()) {
+            for (IPermission p : r.getPermissions()) return p;
+        }
+        return null;
+    }
+
+    private Object allocate(Class<?> cls) throws Exception {
+        try {
+            Constructor<?> c = cls.getDeclaredConstructor();
+            c.setAccessible(true);
+            return c.newInstance();
+        } catch (Throwable noNoArg) {
+            Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
+            Field theUnsafe = unsafeClass.getDeclaredField("theUnsafe");
+            theUnsafe.setAccessible(true);
+            Object unsafe = theUnsafe.get(null);
+            return unsafeClass.getMethod("allocateInstance", Class.class).invoke(unsafe, cls);
+        }
+    }
+
+    /** Sets the first String field currently equal to `oldValue` to `newValue`. */
+    private void overwriteStringField(Object obj, String oldValue, String newValue) throws Exception {
+        for (Class<?> k = obj.getClass(); k != null && k != Object.class; k = k.getSuperclass()) {
+            for (Field f : k.getDeclaredFields()) {
+                if (f.getType() != String.class) continue;
+                f.setAccessible(true);
+                if (oldValue != null && oldValue.equals(f.get(obj))) { f.set(obj, newValue); return; }
+            }
+        }
     }
 
     // --- ladders ------------------------------------------------------------
