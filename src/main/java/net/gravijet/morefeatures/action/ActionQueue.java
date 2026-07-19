@@ -74,6 +74,9 @@ public class ActionQueue {
             + "  `status`        VARCHAR(16)  NOT NULL DEFAULT 'pending',"
             + "  `result`        VARCHAR(255),"
             + "  `created_at`    DATETIME     NOT NULL,"
+            // Null means "any server will do", which is true of a ban. A restart
+            // is the opposite: it has to happen on one named box.
+            + "  `target_server` VARCHAR(64),"
             + "  `claimed_by`    VARCHAR(64),"
             + "  `claimed_at`    DATETIME,"
             + "  `done_at`       DATETIME,"
@@ -83,8 +86,15 @@ public class ActionQueue {
             + "  INDEX `idx_pending` (`status`, `id`)"
             + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
 
+    /** Existing installs predate server targeting. */
+    private static final String MIGRATE =
+            "ALTER TABLE `mod_actions` ADD COLUMN IF NOT EXISTS `target_server` VARCHAR(64)";
+
+    // A job either names no server — anybody may take it — or names this one.
     private static final String SELECT_PENDING =
-            "SELECT * FROM `mod_actions` WHERE `status` = 'pending' ORDER BY `id` LIMIT " + BATCH;
+            "SELECT * FROM `mod_actions` WHERE `status` = 'pending'"
+            + " AND (`target_server` IS NULL OR `target_server` = ?)"
+            + " ORDER BY `id` LIMIT " + BATCH;
 
     private static final String CLAIM =
             "UPDATE `mod_actions` SET `status` = 'running', `claimed_by` = ?, `claimed_at` = NOW()"
@@ -106,6 +116,13 @@ public class ActionQueue {
     public void createTables() throws SQLException {
         try (Connection conn = database.getConnection(); Statement st = conn.createStatement()) {
             st.executeUpdate(CREATE);
+            try {
+                st.executeUpdate(MIGRATE);
+            } catch (SQLException ignored) {
+                // Older MySQL lacks ADD COLUMN IF NOT EXISTS; the column is either
+                // already there or this server predates it. Neither should stop
+                // bans from landing.
+            }
         }
     }
 
@@ -161,31 +178,33 @@ public class ActionQueue {
 
     private List<Job> readPending(Connection conn) throws SQLException {
         List<Job> out = new ArrayList<>();
-        try (PreparedStatement ps = conn.prepareStatement(SELECT_PENDING);
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                Job j = new Job();
-                j.id = rs.getLong("id");
-                j.action = rs.getString("action");
-                j.rankName = rs.getString("rank_name");
-                j.punishmentId = rs.getString("punishment_id");
-                j.durationMs = rs.getLong("duration_ms");
-                j.permanent = rs.getBoolean("permanent");
-                j.reason = rs.getString("reason");
-                j.silent = rs.getBoolean("silent");
+        try (PreparedStatement ps = conn.prepareStatement(SELECT_PENDING)) {
+            ps.setString(1, node);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Job j = new Job();
+                    j.id = rs.getLong("id");
+                    j.action = rs.getString("action");
+                    j.rankName = rs.getString("rank_name");
+                    j.punishmentId = rs.getString("punishment_id");
+                    j.durationMs = rs.getLong("duration_ms");
+                    j.permanent = rs.getBoolean("permanent");
+                    j.reason = rs.getString("reason");
+                    j.silent = rs.getBoolean("silent");
 
-                String target = rs.getString("target_uuid");
-                try {
-                    j.target = UUID.fromString(target);
-                } catch (IllegalArgumentException e) {
-                    // Can never succeed, so it is failed now rather than claimed
-                    // and retried until somebody notices.
-                    finish(j.id, "failed", "target_uuid is not a UUID: " + target);
-                    continue;
+                    String target = rs.getString("target_uuid");
+                    try {
+                        j.target = UUID.fromString(target);
+                    } catch (IllegalArgumentException e) {
+                        // Can never succeed, so it is failed now rather than
+                        // claimed and retried until somebody notices.
+                        finish(j.id, "failed", "target_uuid is not a UUID: " + target);
+                        continue;
+                    }
+                    String actor = rs.getString("actor_uuid");
+                    j.actor = actor == null ? CONSOLE : parseOr(actor, CONSOLE);
+                    out.add(j);
                 }
-                String actor = rs.getString("actor_uuid");
-                j.actor = actor == null ? CONSOLE : parseOr(actor, CONSOLE);
-                out.add(j);
             }
         }
         return out;
@@ -207,8 +226,15 @@ public class ActionQueue {
                 finishAsync(job.id, "failed", "Phoenix API went away mid-job");
                 return;
             }
-            String problem = execute(phoenix, job);
-            finishAsync(job.id, problem == null ? "done" : "failed", problem == null ? "ok" : problem);
+            // null means it worked and there is nothing to add; anything else is
+            // the reason it did not — except an "ok:" prefix, which is a success
+            // that has something worth saying ("cleared 3", "restart in 60s").
+            String result = execute(phoenix, job);
+            boolean ok = result == null || result.startsWith("ok:");
+            finishAsync(
+                    job.id,
+                    ok ? "done" : "failed",
+                    result == null ? "ok" : (ok ? result.substring(3) : result));
         } catch (Exception e) {
             // A job that throws must be marked failed, never left running: the
             // website is watching this row to tell somebody whether their ban
@@ -226,10 +252,19 @@ public class ActionQueue {
             case "mute":      return punish(phoenix, job, PunishmentType.MUTE);
             case "kick":      return punish(phoenix, job, PunishmentType.KICK);
             case "blacklist": return punish(phoenix, job, PunishmentType.BLACKLIST);
+            case "warn":      return punish(phoenix, job, PunishmentType.WARN);
             case "revoke":    return revoke(phoenix, job);
             case "grant":     return grant(phoenix, job);
             case "ungrant":   return ungrant(phoenix, job);
             case "alert":     return alert(job);
+            case "logout":    return logout(phoenix, job);
+            case "cooldowns": return clearCooldowns(phoenix, job);
+            case "security":  return resetSecurity(phoenix, job);
+            case "vpn_allow": return vpnBypass(phoenix, job, true);
+            case "vpn_deny":  return vpnBypass(phoenix, job, false);
+            case "undisguise": return undisguise(phoenix, job);
+            case "reboot":    return reboot(phoenix, job);
+            case "reboot_cancel": return rebootCancel(phoenix);
             default:          return "unknown action: " + job.action;
         }
     }
@@ -250,8 +285,9 @@ public class ActionQueue {
         // A kick is an event: it happens once and there is nothing to expire. The
         // core stores it permanent-and-active forever and that is correct — see
         // the website's lib/punishments for why anything reading `active: true`
-        // as "restricted right now" gets kicks badly wrong.
-        if (type == PunishmentType.KICK) {
+        // as "restricted right now" gets kicks badly wrong. A warning is the same
+        // shape: it is a thing that happened, not a state you are in.
+        if (type == PunishmentType.KICK || type == PunishmentType.WARN) {
             p.setPermanent(true);
             p.setDuration(0L);
         } else {
@@ -308,6 +344,67 @@ public class ActionQueue {
 
         phoenix.getGrantHandler().ungrant(job.actor, profile, grant, job.reason);
         return null;
+    }
+
+    // --- the smaller powers -------------------------------------------------
+    //
+    // None of these punish anybody. They are the things a moderator needs when
+    // something is stuck rather than when somebody misbehaved — a ghost session,
+    // a cooldown that will not clear, a locked-out admin, a legitimate VPN.
+
+    /** Clears a stale session — the fix for somebody the network thinks is still on. */
+    private String logout(Phoenix phoenix, Job job) {
+        phoenix.getLoginHandler().logoutPlayer(job.target);
+        return null;
+    }
+
+    private String clearCooldowns(Phoenix phoenix, Job job) {
+        int had = phoenix.getCooldownHandler().getCooldownCount(job.target);
+        phoenix.getCooldownHandler().clearCooldowns(job.target);
+        // Say how many there were: "cleared 0" is a useful answer when somebody
+        // swears they are still on cooldown.
+        return had == 0 ? "ok:there were none" : "ok:cleared " + had;
+    }
+
+    /**
+     * Clears the core's security hold on an account — what produces
+     * "[Security] Unverified User" and locks a staff member out of their own rank.
+     */
+    private String resetSecurity(Phoenix phoenix, Job job) {
+        if (!phoenix.getSecurityHandler().hasSecurity(job.target)) return null; // already clear
+        phoenix.getSecurityHandler().removeSecurity(job.target);
+        return null;
+    }
+
+    private String vpnBypass(Phoenix phoenix, Job job, boolean allow) {
+        if (allow) phoenix.getAntiVPNHandler().whitelist(job.target, true);
+        else phoenix.getAntiVPNHandler().unwhitelist(job.target, true);
+        return null;
+    }
+
+    private String undisguise(Phoenix phoenix, Job job) {
+        IProfile profile = phoenix.getProfileHandler().getProfile(job.target);
+        if (profile == null) return "no profile for " + job.target;
+        phoenix.getDisguiseHandler().undisguise(profile, true);
+        return null;
+    }
+
+    /**
+     * A restart, with the countdown the players already know.
+     *
+     * This is why jobs can name a server: a reboot happens where it is run, so
+     * "restart Bedwars-2" has to be claimed by Bedwars-2 and nobody else.
+     */
+    private String reboot(Phoenix phoenix, Job job) {
+        long seconds = Math.max(0L, job.durationMs / 1000L);
+        phoenix.getRebootHandler().reboot(plugin.getServer().getConsoleSender(), seconds);
+        return "ok:restart scheduled in " + seconds + "s on " + node;
+    }
+
+    private String rebootCancel(Phoenix phoenix) {
+        if (!phoenix.getRebootHandler().isRebootScheduled()) return "ok:no restart was scheduled";
+        phoenix.getRebootHandler().cancel(plugin.getServer().getConsoleSender());
+        return "ok:restart cancelled on " + node;
     }
 
     /** The core's own staff alert prefix, as it appears in game. */
