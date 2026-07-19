@@ -282,6 +282,9 @@ public class Main extends JavaPlugin {
             return;
         }
         getServer().getScheduler().runTaskTimer(this, () -> serverPublisher.tick(), 200L, 200L);
+        // Once a second on the server thread: the sample *is* the measurement, so
+        // it has to run where the ticks are.
+        getServer().getScheduler().runTaskTimer(this, () -> serverPublisher.sampleTps(), 20L, 20L);
     }
 
     /**
