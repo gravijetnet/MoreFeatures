@@ -2,6 +2,8 @@ package net.gravijet.morefeatures.action;
 
 import net.gravijet.morefeatures.Main;
 import net.gravijet.morefeatures.database.DatabaseManager;
+import org.bukkit.ChatColor;
+import xyz.refinedev.phoenix.BukkitAPI;
 import xyz.refinedev.phoenix.Phoenix;
 import xyz.refinedev.phoenix.profile.IProfile;
 import xyz.refinedev.phoenix.profile.grant.IGrant;
@@ -227,6 +229,7 @@ public class ActionQueue {
             case "revoke":    return revoke(phoenix, job);
             case "grant":     return grant(phoenix, job);
             case "ungrant":   return ungrant(phoenix, job);
+            case "alert":     return alert(job);
             default:          return "unknown action: " + job.action;
         }
     }
@@ -304,6 +307,25 @@ public class ActionQueue {
         if (grant == null) return null;
 
         phoenix.getGrantHandler().ungrant(job.actor, profile, grant, job.reason);
+        return null;
+    }
+
+    /** The core's own staff alert prefix, as it appears in game. */
+    private static final String ALERT_PREFIX = "&8[&4Alert&8] &r";
+
+    /**
+     * A staff alert, sent the way the core sends its own.
+     *
+     * This goes through Phoenix rather than through Bukkit, which is the whole
+     * point: BukkitAPI.broadcastToStaff puts it on the core's staff channel, so it
+     * reaches staff on every server and every proxy — not only the players
+     * connected to whichever box happened to claim the job. That is also why this
+     * is a claimed action and not one of Broadcaster's fan-out rows: exactly one
+     * server may send it, or the network sees it once per server.
+     */
+    private String alert(Job job) {
+        if (job.reason == null || job.reason.isEmpty()) return "no message";
+        BukkitAPI.broadcastToStaff(ChatColor.translateAlternateColorCodes('&', ALERT_PREFIX + job.reason));
         return null;
     }
 

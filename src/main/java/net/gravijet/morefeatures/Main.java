@@ -10,6 +10,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import net.gravijet.morefeatures.action.ActionQueue;
 import net.gravijet.morefeatures.action.Broadcaster;
 import net.gravijet.morefeatures.action.ConfigActionQueue;
+import net.gravijet.morefeatures.action.ServerPublisher;
 import net.gravijet.morefeatures.config.BridgeConfig;
 import net.gravijet.morefeatures.database.DatabaseManager;
 import net.gravijet.morefeatures.autoplace.AutoPlaceConfig;
@@ -72,6 +73,7 @@ public class Main extends JavaPlugin {
     private ActionQueue actionQueue;
     private ConfigActionQueue configQueue;
     private Broadcaster broadcaster;
+    private ServerPublisher serverPublisher;
 
     private final Map<UUID, Integer> playtimeTasks = new ConcurrentHashMap<>();
 
@@ -264,6 +266,22 @@ public class Main extends JavaPlugin {
             return;
         }
         getServer().getScheduler().runTaskTimerAsynchronously(this, () -> broadcaster.poll(), 140L, 20L);
+
+        // Moving a player between servers is the proxy's job, and it will only be
+        // asked over its own channel — without this a Connect goes nowhere.
+        getServer().getMessenger().registerOutgoingPluginChannel(this, Broadcaster.BUNGEE_CHANNEL);
+
+        // What this server looks like, published for the website every ten
+        // seconds. Runs on the server thread: it reads the player list.
+        serverPublisher = new ServerPublisher(this, databaseManager, phoenixServerName());
+        try {
+            serverPublisher.createTables();
+        } catch (SQLException | RuntimeException e) {
+            getLogger().log(Level.SEVERE, "Could not create network_servers — the website cannot show the network.", e);
+            serverPublisher = null;
+            return;
+        }
+        getServer().getScheduler().runTaskTimer(this, () -> serverPublisher.tick(), 200L, 200L);
     }
 
     /**

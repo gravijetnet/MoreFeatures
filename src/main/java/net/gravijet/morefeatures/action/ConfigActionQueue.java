@@ -189,6 +189,10 @@ public class ConfigActionQueue {
             case "rank_update":  return rankUpdate(phoenix, job);
             case "rank_delete":  return rankDelete(phoenix, job);
             case "ladder_update": return ladderUpdate(phoenix, job);
+            case "whitelist_on":     return whitelist(phoenix, true);
+            case "whitelist_off":    return whitelist(phoenix, false);
+            case "whitelist_add":    return whitelistPlayer(phoenix, job.subject, true);
+            case "whitelist_remove": return whitelistPlayer(phoenix, job.subject, false);
             default:             return "!unknown action: " + job.action;
         }
     }
@@ -424,6 +428,25 @@ public class ConfigActionQueue {
                 if (oldValue != null && oldValue.equals(f.get(obj))) { f.set(obj, newValue); return; }
             }
         }
+    }
+
+    // --- the whitelist (maintenance) ----------------------------------------
+    //
+    // Turning this on closes the network to everyone the core does not let past —
+    // the single most consequential switch the website has. It is left entirely to
+    // the core to decide who is exempt (there is a whitelist rank for exactly
+    // that); this only flips the switch and names who flipped it.
+
+    private String whitelist(Phoenix phoenix, boolean on) {
+        phoenix.getWhitelistHandler().setEnabled(on);
+        return on ? "whitelist ON — the network is closed" : "whitelist OFF — the network is open";
+    }
+
+    private String whitelistPlayer(Phoenix phoenix, String name, boolean add) {
+        if (name == null || name.isEmpty()) return "!no player named";
+        if (add) phoenix.getWhitelistHandler().whitelistPlayer(name, false);
+        else phoenix.getWhitelistHandler().unwhitelistPlayer(name);
+        return (add ? "whitelisted " : "removed from the whitelist: ") + name;
     }
 
     // --- ladders ------------------------------------------------------------
