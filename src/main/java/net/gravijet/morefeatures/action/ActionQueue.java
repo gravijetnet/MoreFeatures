@@ -6,6 +6,7 @@ import org.bukkit.ChatColor;
 import xyz.refinedev.phoenix.BukkitAPI;
 import xyz.refinedev.phoenix.Phoenix;
 import xyz.refinedev.phoenix.profile.IProfile;
+import xyz.refinedev.phoenix.profile.chatsnapshot.IChatSnapshot;
 import xyz.refinedev.phoenix.profile.grant.IGrant;
 import xyz.refinedev.phoenix.profile.punishment.IPunishment;
 import xyz.refinedev.phoenix.profile.punishment.PunishmentType;
@@ -263,6 +264,8 @@ public class ActionQueue {
             case "vpn_allow": return vpnBypass(phoenix, job, true);
             case "vpn_deny":  return vpnBypass(phoenix, job, false);
             case "undisguise": return undisguise(phoenix, job);
+            case "snapshot":  return snapshot(phoenix, job);
+            case "command":   return command(job);
             case "reboot":    return reboot(phoenix, job);
             case "reboot_cancel": return rebootCancel(phoenix);
             default:          return "unknown action: " + job.action;
@@ -387,6 +390,41 @@ public class ActionQueue {
         if (profile == null) return "no profile for " + job.target;
         phoenix.getDisguiseHandler().undisguise(profile, true);
         return null;
+    }
+
+    /**
+     * A snapshot of what has been said, taken for a report.
+     *
+     * The core keeps a rolling window of chat; this freezes the part around one
+     * player into a record with its own short id, which is what turns "they were
+     * abusive" into something the next person can actually read.
+     */
+    private String snapshot(Phoenix phoenix, Job job) {
+        IChatSnapshot snap = job.actor.equals(CONSOLE)
+                ? phoenix.getChatSnapshotHandler().createSnapshot(job.target)
+                : phoenix.getChatSnapshotHandler().createSnapshot(job.target, job.actor);
+        if (snap == null) return "the core took no snapshot — is there any chat to snapshot?";
+        return "ok:" + snap.getNiceId();
+    }
+
+    /**
+     * Any command, as console, on this server.
+     *
+     * The honest escape hatch: it covers everything Phoenix can do that has no
+     * API, and everything it gains later. It is deliberately the most gated thing
+     * here — the website only lets Management queue one, and every one is in the
+     * audit with the name of whoever ran it. Jobs of this kind always name a
+     * server, so "run this on Bedwars-2" runs there and nowhere else.
+     */
+    private String command(Job job) {
+        String line = job.reason;
+        if (line == null || line.trim().isEmpty()) return "no command";
+        // Bukkit wants it without the slash; people type it with one.
+        String cmd = line.trim().startsWith("/") ? line.trim().substring(1) : line.trim();
+        boolean known = plugin.getServer().dispatchCommand(plugin.getServer().getConsoleSender(), cmd);
+        // dispatchCommand says whether a command by that name exists, not whether
+        // it did what you hoped — so that is exactly what gets reported.
+        return known ? "ok:ran on " + node : "no command called '" + cmd.split(" ")[0] + "' on " + node;
     }
 
     /**

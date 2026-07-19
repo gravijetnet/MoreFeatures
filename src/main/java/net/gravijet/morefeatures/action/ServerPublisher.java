@@ -3,6 +3,7 @@ package net.gravijet.morefeatures.action;
 import net.gravijet.morefeatures.Main;
 import net.gravijet.morefeatures.database.DatabaseManager;
 import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
 import xyz.refinedev.phoenix.Phoenix;
 
 import java.sql.Connection;
@@ -33,17 +34,23 @@ public class ServerPublisher {
             + "  `online`       INT         NOT NULL DEFAULT 0,"
             + "  `max_players`  INT         NOT NULL DEFAULT 0,"
             + "  `whitelisted`  BOOLEAN     NOT NULL DEFAULT 0,"
+            + "  `players`      MEDIUMTEXT,"   // who is on, one name per line
             + "  `updated_at`   DATETIME    NOT NULL,"
             + "  PRIMARY KEY (`name`)"
             + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
 
+    /** Existing installs predate the player list. */
+    private static final String MIGRATE =
+            "ALTER TABLE `network_servers` ADD COLUMN IF NOT EXISTS `players` MEDIUMTEXT";
+
     private static final String UPSERT = ""
             + "INSERT INTO `network_servers`"
-            + " (`name`, `server_group`, `online`, `max_players`, `whitelisted`, `updated_at`)"
-            + " VALUES (?, ?, ?, ?, ?, NOW())"
+            + " (`name`, `server_group`, `online`, `max_players`, `whitelisted`, `players`, `updated_at`)"
+            + " VALUES (?, ?, ?, ?, ?, ?, NOW())"
             + " ON DUPLICATE KEY UPDATE `server_group` = VALUES(`server_group`),"
             + " `online` = VALUES(`online`), `max_players` = VALUES(`max_players`),"
-            + " `whitelisted` = VALUES(`whitelisted`), `updated_at` = NOW()";
+            + " `whitelisted` = VALUES(`whitelisted`), `players` = VALUES(`players`),"
+            + " `updated_at` = NOW()";
 
     private final Main plugin;
     private final DatabaseManager database;
@@ -58,6 +65,12 @@ public class ServerPublisher {
     public void createTables() throws SQLException {
         try (Connection conn = database.getConnection(); Statement st = conn.createStatement()) {
             st.executeUpdate(CREATE);
+            try {
+                st.executeUpdate(MIGRATE);
+            } catch (SQLException ignored) {
+                // Older MySQL lacks ADD COLUMN IF NOT EXISTS. The status still
+                // publishes; only the name list is missing.
+            }
         }
     }
 
@@ -74,6 +87,15 @@ public class ServerPublisher {
         String group = null;
         boolean whitelisted = false;
 
+        // Who is on, by name. Vanished staff are still listed — this is a staff
+        // console, and a moderator hunting somebody needs to know they are here.
+        StringBuilder names = new StringBuilder();
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            if (names.length() > 0) names.append('\n');
+            names.append(p.getName());
+        }
+        final String playerList = names.toString();
+
         Phoenix phoenix = Phoenix.getInstance();
         if (phoenix != null && phoenix.isApiEnabled()) {
             try { group = phoenix.getNetworkHandler().getServerGroup(); } catch (Exception ignored) { /* not fatal */ }
@@ -82,10 +104,10 @@ public class ServerPublisher {
 
         final String g = group;
         final boolean w = whitelisted;
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> write(online, max, g, w));
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> write(online, max, g, w, playerList));
     }
 
-    private void write(int online, int max, String group, boolean whitelisted) {
+    private void write(int online, int max, String group, boolean whitelisted, String players) {
         try (Connection conn = database.getConnection();
              PreparedStatement ps = conn.prepareStatement(UPSERT)) {
             ps.setString(1, node);
@@ -93,6 +115,7 @@ public class ServerPublisher {
             ps.setInt(3, online);
             ps.setInt(4, max);
             ps.setBoolean(5, whitelisted);
+            ps.setString(6, players);
             ps.executeUpdate();
         } catch (SQLException e) {
             plugin.getLogger().log(Level.WARNING, "Could not publish server status: " + e.getMessage());
