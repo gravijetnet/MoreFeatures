@@ -66,7 +66,7 @@ public class PlayerListener implements Listener {
         UUID uuid = event.getPlayer().getUniqueId();
         String name = event.getPlayer().getName();
 
-        plugin.startPlaytimeTimer(uuid);
+        plugin.trackPlaytime(uuid);
 
         if (plugin.getDatabaseManager() == null) return;
 
@@ -86,10 +86,12 @@ public class PlayerListener implements Listener {
     public void onPlayerQuit(PlayerQuitEvent event) {
         UUID uuid = event.getPlayer().getUniqueId();
 
-        // BUG-27 fix: cancel the periodic timer first so it cannot fire a concurrent write
-        // between the cancel and the final one-shot sync below.
-        plugin.cancelPlaytimeTimer(uuid);
+        // BUG-27 fix: drop them from the batch first so the periodic write cannot
+        // race the final one-shot sync below.
+        plugin.untrackPlaytime(uuid);
 
+        // Their last few minutes, written on its own — this is the one that has
+        // to be right, so unlike the batch it is allowed the database fallback.
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
             if (plugin.getPlaytimeSync() != null) plugin.getPlaytimeSync().syncPlaytime(uuid);
         });

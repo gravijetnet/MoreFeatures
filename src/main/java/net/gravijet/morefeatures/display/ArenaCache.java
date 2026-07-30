@@ -4,7 +4,9 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -29,7 +31,7 @@ public class ArenaCache implements ArenaLookup {
     private static final long REFRESH_TICKS = 10L;
 
     private final ArenaLookup delegate;
-    private final Map<UUID, Snapshot> snapshots = new ConcurrentHashMap<>();
+    private final Map<UUID, TeamState> snapshots = new ConcurrentHashMap<>();
 
     private BukkitTask task;
 
@@ -38,15 +40,32 @@ public class ArenaCache implements ArenaLookup {
     }
 
     public void start(Plugin plugin) {
+        // Without MBedwars every answer is "not in a game" and the map stays
+        // empty, which the getters already read as exactly that. Running the
+        // timer anyway would walk every player twice a second to learn nothing.
+        if (delegate == ArenaLookup.ABSENT) return;
+
         this.task = plugin.getServer().getScheduler().runTaskTimer(plugin, () -> {
+            int online = 0;
             for (Player player : plugin.getServer().getOnlinePlayers()) {
-                snapshots.put(player.getUniqueId(), new Snapshot(
-                        delegate.teamIndex(player), delegate.teamColor(player)));
+                online++;
+                snapshots.put(player.getUniqueId(), delegate.teamState(player));
             }
             // Anyone no longer online stops being tracked. Iterating the map
             // rather than hooking quit keeps this correct across kicks, world
             // transfers and a /reload, none of which reliably fire a quit here.
-            snapshots.keySet().removeIf(uuid -> plugin.getServer().getPlayer(uuid) == null);
+            //
+            // Only when the map has grown past the player count, though: the old
+            // unconditional removeIf called Bukkit.getPlayer(UUID) per entry, and
+            // that walks the player list — quadratic, twice a second, forever, to
+            // remove nothing on all but the one tick after somebody leaves.
+            if (snapshots.size() > online) {
+                Set<UUID> present = new HashSet<>(online * 2);
+                for (Player player : plugin.getServer().getOnlinePlayers()) {
+                    present.add(player.getUniqueId());
+                }
+                snapshots.keySet().retainAll(present);
+            }
         }, REFRESH_TICKS, REFRESH_TICKS);
     }
 
@@ -57,28 +76,23 @@ public class ArenaCache implements ArenaLookup {
 
     @Override
     public int teamIndex(Player player) {
-        Snapshot snapshot = snapshots.get(player.getUniqueId());
-        return snapshot != null ? snapshot.teamIndex : NONE;
+        return teamState(player).index();
     }
 
     @Override
     public String teamColor(Player player) {
-        Snapshot snapshot = snapshots.get(player.getUniqueId());
-        return snapshot != null ? snapshot.teamColor : "";
+        return teamState(player).color();
     }
 
     @Override
     public boolean inGame(Player player) {
-        return teamIndex(player) != NONE;
+        return teamState(player).index() != NONE;
     }
 
-    private static final class Snapshot {
-        final int    teamIndex;
-        final String teamColor;
-
-        Snapshot(int teamIndex, String teamColor) {
-            this.teamIndex = teamIndex;
-            this.teamColor = teamColor;
-        }
+    /** The snapshot itself — a map read, so a caller needing all three pays for one. */
+    @Override
+    public TeamState teamState(Player player) {
+        TeamState snapshot = snapshots.get(player.getUniqueId());
+        return snapshot != null ? snapshot : TeamState.OUTSIDE;
     }
 }

@@ -210,6 +210,36 @@ public class DatabaseManager {
         }
     }
 
+    /**
+     * Everybody's playtime in one round trip.
+     *
+     * Playtime used to be written by a separate repeating task per player, each
+     * taking its own connection for a single-row UPDATE — a hundred players meant
+     * a hundred borrows and a hundred round trips, staggered across five minutes
+     * so the pool never settled. One batch on one connection is the same writes
+     * for a fraction of the cost, and {@code rewriteBatchedStatements=true} on the
+     * pool means the driver sends them as one statement rather than a hundred.
+     */
+    public void updatePlaytimes(java.util.Map<String, Long> playtimes) {
+        if (playtimes.isEmpty()) return;
+        Timestamp now = now();
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(UPDATE_PLAYER_PLAYTIME)) {
+
+            for (java.util.Map.Entry<String, Long> entry : playtimes.entrySet()) {
+                ps.setLong(1, entry.getValue());
+                ps.setTimestamp(2, now);
+                ps.setString(3, entry.getKey());
+                ps.addBatch();
+            }
+            ps.executeBatch();
+
+        } catch (SQLException e) {
+            logger.log(Level.WARNING, "Failed to update playtime for "
+                    + playtimes.size() + " players", e);
+        }
+    }
+
     public void updatePlayerRank(String uuid, String rank) {
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(UPDATE_PLAYER_RANK)) {

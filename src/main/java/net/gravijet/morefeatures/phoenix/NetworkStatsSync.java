@@ -8,8 +8,17 @@ import xyz.refinedev.phoenix.Phoenix;
  */
 public class NetworkStatsSync {
 
-    // Re-run COUNT(*) at most once every 30 seconds to avoid a full index scan on every event.
-    private static final long COUNT_CACHE_TTL_MS = 30_000L;
+    /**
+     * How long the registered-player count is reused before COUNT(*) runs again.
+     *
+     * This is the one genuinely expensive query the bridge makes: InnoDB has no
+     * stored row count, so COUNT(*) scans an index end to end and gets slower
+     * every day the network runs. It also answers "how many accounts have ever
+     * joined", which moves by a handful an hour — nothing that needs asking
+     * every thirty seconds. The number that actually changes, current_online,
+     * is read from the core and written on every sync regardless.
+     */
+    private static final long COUNT_CACHE_TTL_MS = 300_000L;
 
     private final DatabaseManager databaseManager;
 

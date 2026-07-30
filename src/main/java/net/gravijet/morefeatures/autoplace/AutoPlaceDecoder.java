@@ -193,11 +193,14 @@ public class AutoPlaceDecoder extends ChannelDuplexHandler {
     // -----------------------------------------------------------------
 
     private boolean handlePacket(Packet<?> packet) {
-        if (packet instanceof PacketPlayInBlockPlace) {
-            return handleBlockPlace((PacketPlayInBlockPlace) packet);
-        }
+        // Flying first: every player sends about twenty of these a second and at
+        // most a handful of block places, so this is the branch that decides how
+        // much the anticheat costs when nobody is doing anything wrong.
         if (packet instanceof PacketPlayInFlying) {
             return handleFlying((PacketPlayInFlying) packet);
+        }
+        if (packet instanceof PacketPlayInBlockPlace) {
+            return handleBlockPlace((PacketPlayInBlockPlace) packet);
         }
         return true;
     }

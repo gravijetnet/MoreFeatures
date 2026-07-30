@@ -10,6 +10,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 /**
@@ -67,12 +68,15 @@ public class ServerPublisher {
     private final Main plugin;
     private final DatabaseManager database;
     private final String node;
+    /** What the core's own global.yml calls this server's group, or null. */
+    private final String configuredGroup;
     private final long startedAt = System.currentTimeMillis();
 
-    public ServerPublisher(Main plugin, DatabaseManager database, String node) {
+    public ServerPublisher(Main plugin, DatabaseManager database, String node, String configuredGroup) {
         this.plugin = plugin;
         this.database = database;
         this.node = node;
+        this.configuredGroup = configuredGroup;
     }
 
     public void createTables() throws SQLException {
@@ -115,6 +119,41 @@ public class ServerPublisher {
         lastSample = now;
     }
 
+    // --- what the core says about this server --------------------------------
+    //
+    // The group and the whitelist flag change roughly never, and asking the core
+    // for them is not free, so they are refreshed on their own slow clock rather
+    // than on every publish.
+    //
+    // They are also the two calls that can vanish underneath us. pxAPI is
+    // published as a mutable "2.0" — the jar we compile against and the Phoenix
+    // actually installed on a given box are not guaranteed to agree, and a method
+    // that is missing at runtime raises NoSuchMethodError. That is an Error, not
+    // an Exception, so `catch (Exception)` never saw it: it unwound straight out
+    // of tick(), the scheduler logged "Task #71 generated an exception" every
+    // interval, and the write below never ran — no server row published at all,
+    // for one optional field. Now each call gets one attempt, and a LinkageError
+    // retires it for the lifetime of the JVM instead of being thrown again on
+    // every tick (constructing and filling in a stack trace is not cheap either).
+
+    private static final long CORE_REFRESH_MS = 5_000L;
+
+    private long coreCheckedAt = 0L;
+    private String coreGroup = null;
+    private boolean coreWhitelisted = false;
+    private boolean groupUnsupported = false;
+    private boolean whitelistUnsupported = false;
+
+    /**
+     * At most one write is in flight at a time. Publishing runs on a fast timer,
+     * so without this a slow database would let tasks pile up behind each other
+     * and every one of them would be writing an already-stale row.
+     */
+    private final AtomicBoolean writing = new AtomicBoolean(false);
+
+    /** Reused across ticks — the player list is rebuilt every time and thrown away. */
+    private final StringBuilder names = new StringBuilder(256);
+
     /**
      * Called on the server thread — the player list and the core's handlers are
      * read here, and only the write is handed off, because reading Bukkit's world
@@ -123,25 +162,29 @@ public class ServerPublisher {
     public void tick() {
         if (database == null) return;
 
-        int online = Bukkit.getOnlinePlayers().size();
-        int max = Bukkit.getMaxPlayers();
-        String group = null;
-        boolean whitelisted = false;
+        // Skip the whole tick if the last one is still writing rather than queue
+        // another one behind it. The next tick is a second away.
+        if (writing.get()) return;
+
+        final int max = Bukkit.getMaxPlayers();
 
         // Who is on, by name. Vanished staff are still listed — this is a staff
         // console, and a moderator hunting somebody needs to know they are here.
-        StringBuilder names = new StringBuilder();
+        // One pass: getOnlinePlayers() is asked once, not once for the count and
+        // again for the names.
+        names.setLength(0);
+        int online = 0;
         for (Player p : Bukkit.getOnlinePlayers()) {
-            if (names.length() > 0) names.append('\n');
+            if (online > 0) names.append('\n');
             names.append(p.getName());
+            online++;
         }
         final String playerList = names.toString();
+        final int onlineNow = online;
 
-        Phoenix phoenix = Phoenix.getInstance();
-        if (phoenix != null && phoenix.isApiEnabled()) {
-            try { group = phoenix.getNetworkHandler().getServerGroup(); } catch (Exception ignored) { /* not fatal */ }
-            try { whitelisted = phoenix.getWhitelistHandler().isWhitelisted(); } catch (Exception ignored) { /* not fatal */ }
-        }
+        refreshFromCore();
+        final String g = coreGroup != null ? coreGroup : configuredGroup;
+        final boolean w = coreWhitelisted;
 
         // The JVM's own view of itself. This is the memory the server process is
         // actually using, which is a different and more useful number than the
@@ -153,10 +196,59 @@ public class ServerPublisher {
         final long uptime = System.currentTimeMillis() - startedAt;
         final double nowTps = tps;
 
-        final String g = group;
-        final boolean w = whitelisted;
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin,
-                () -> write(online, max, g, w, playerList, nowTps, heapUsed, heapMax, uptime));
+        if (!writing.compareAndSet(false, true)) return;
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                write(onlineNow, max, g, w, playerList, nowTps, heapUsed, heapMax, uptime);
+            } finally {
+                writing.set(false);
+            }
+        });
+    }
+
+    /** On the server thread. Never throws — a publish must not depend on the core. */
+    private void refreshFromCore() {
+        long now = System.currentTimeMillis();
+        if (now - coreCheckedAt < CORE_REFRESH_MS) return;
+        coreCheckedAt = now;
+
+        Phoenix phoenix;
+        try {
+            phoenix = Phoenix.getInstance();
+        } catch (Throwable ignored) {
+            return;
+        }
+        if (phoenix == null || !phoenix.isApiEnabled()) return;
+
+        if (!groupUnsupported) {
+            try {
+                coreGroup = phoenix.getNetworkHandler().getServerGroup();
+            } catch (LinkageError e) {
+                groupUnsupported = true;
+                plugin.getLogger().warning("This server's Phoenix has no "
+                        + "INetworkHandler#getServerGroup() — it is older than the pxAPI this "
+                        + "plugin was built against. " + (configuredGroup != null
+                                ? "Using server.group from Phoenix/global.yml (" + configuredGroup + ") instead."
+                                : "Phoenix/global.yml names no server.group either, so this server "
+                                        + "publishes without one — set server.group there to fix it.")
+                        + " Everything else publishes as normal.");
+            } catch (Exception ignored) {
+                // The core is up but not ready to answer. Try again next refresh.
+            }
+        }
+
+        if (!whitelistUnsupported) {
+            try {
+                coreWhitelisted = phoenix.getWhitelistHandler().isWhitelisted();
+            } catch (LinkageError e) {
+                whitelistUnsupported = true;
+                plugin.getLogger().warning("This server's Phoenix has no "
+                        + "IWhitelistHandler#isWhitelisted() — the website will show this server "
+                        + "as un-whitelisted. Everything else publishes as normal.");
+            } catch (Exception ignored) {
+                // Same again.
+            }
+        }
     }
 
     private void write(int online, int max, String group, boolean whitelisted, String players,

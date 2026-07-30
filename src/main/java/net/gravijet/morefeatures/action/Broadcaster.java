@@ -98,15 +98,17 @@ public class Broadcaster {
         String target;
     }
 
-    public void poll() {
+    private static final String SELECT_FRESH =
+            "SELECT `id`, `kind`, `message`, `target_uuid` FROM `network_broadcasts`"
+            + " WHERE `id` > ? ORDER BY `id` LIMIT " + BATCH;
+
+    /** Off the main thread, on a connection shared with the action queues. */
+    public void poll(Connection conn) throws SQLException {
         if (database == null) return;
 
-        List<Cast> fresh = new ArrayList<>();
+        List<Cast> fresh = null;
         long highest = cursor;
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                     "SELECT `id`, `kind`, `message`, `target_uuid` FROM `network_broadcasts`"
-                     + " WHERE `id` > ? ORDER BY `id` LIMIT " + BATCH)) {
+        try (PreparedStatement ps = conn.prepareStatement(SELECT_FRESH)) {
             ps.setLong(1, cursor);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -115,21 +117,22 @@ public class Broadcaster {
                     c.kind = rs.getString("kind");
                     c.message = rs.getString("message");
                     c.target = rs.getString("target_uuid");
+                    // Allocated only when there is something to announce, which
+                    // on a normal server is approximately never.
+                    if (fresh == null) fresh = new ArrayList<>(4);
                     fresh.add(c);
                     highest = Math.max(highest, c.id);
                 }
             }
-        } catch (SQLException e) {
-            plugin.getLogger().log(Level.WARNING, "Could not read broadcasts: " + e.getMessage());
-            return;
         }
 
-        if (fresh.isEmpty()) return;
+        if (fresh == null) return;
+        final List<Cast> batch = fresh;
         // Advance the cursor before sending: a send that throws must not make the
         // same line repeat on the next poll.
         cursor = highest;
         plugin.getServer().getScheduler().runTask(plugin, () -> {
-            for (Cast c : fresh) send(c);
+            for (Cast c : batch) send(c);
         });
     }
 

@@ -109,23 +109,22 @@ public class ConfigActionQueue {
         UUID actor;
     }
 
-    public void poll() {
+    /** Off the main thread, on a connection shared with the other queues. */
+    public void poll(Connection conn) throws SQLException {
         if (database == null) return;
         Phoenix phoenix = Phoenix.getInstance();
         if (phoenix == null || !phoenix.isApiEnabled()) return;
 
-        List<Job> claimed = new ArrayList<>();
-        try (Connection conn = database.getConnection()) {
-            for (Job job : readPending(conn)) {
-                try (PreparedStatement ps = conn.prepareStatement(CLAIM)) {
-                    ps.setString(1, node);
-                    ps.setLong(2, job.id);
-                    if (ps.executeUpdate() == 1) claimed.add(job);
-                }
+        List<Job> pending = readPending(conn);
+        if (pending.isEmpty()) return;
+
+        List<Job> claimed = new ArrayList<>(pending.size());
+        try (PreparedStatement ps = conn.prepareStatement(CLAIM)) {
+            for (Job job : pending) {
+                ps.setString(1, node);
+                ps.setLong(2, job.id);
+                if (ps.executeUpdate() == 1) claimed.add(job);
             }
-        } catch (SQLException e) {
-            plugin.getLogger().log(Level.WARNING, "Could not read the config queue: " + e.getMessage());
-            return;
         }
 
         for (Job job : claimed) {

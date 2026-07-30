@@ -38,12 +38,47 @@ public interface ArenaLookup {
     /** Is the player in a game right now? Drives lobby-vs-game behaviour. */
     boolean inGame(Player player);
 
+    /**
+     * Slot and colour together, so a caller that needs both asks MBedwars once.
+     *
+     * {@link ArenaCache} refreshes every player on a timer, and separate
+     * teamIndex/teamColor calls made that two arena lookups per player per
+     * refresh for an answer that comes out of the same arena either way.
+     */
+    default TeamState teamState(Player player) {
+        return new TeamState(teamIndex(player), teamColor(player));
+    }
+
+    /** One player's place in a game, as a value that can be handed between threads. */
+    final class TeamState {
+
+        /** Not in an arena. Shared rather than allocated — it is the common answer. */
+        public static final TeamState OUTSIDE = new TeamState(NONE, "");
+
+        private final int index;
+        private final String color;
+
+        public TeamState(int index, String color) {
+            this.index = index;
+            this.color = color == null ? "" : color;
+        }
+
+        public int index() {
+            return index;
+        }
+
+        public String color() {
+            return color;
+        }
+    }
+
     // -------------------------------------------------------------------------
 
     ArenaLookup ABSENT = new ArenaLookup() {
         @Override public int teamIndex(Player player)    { return NONE; }
         @Override public String teamColor(Player player) { return ""; }
         @Override public boolean inGame(Player player)   { return false; }
+        @Override public TeamState teamState(Player p)   { return TeamState.OUTSIDE; }
     };
 
     static ArenaLookup create(Logger logger) {

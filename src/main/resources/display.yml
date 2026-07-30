@@ -65,3 +65,17 @@ chat:
 
   # Players with this permission may use &-colour codes in their own messages.
   color-permission: "morefeatures.chat.color"
+
+cache:
+  # How long a player's resolved rank, tag and team stay valid before Phoenix is
+  # asked again, in milliseconds.
+  #
+  # TAB requests nine placeholders per player and refreshes them for every
+  # viewer, so without this the same rank is resolved hundreds of times a second
+  # on a full server. A rank change still shows up within this window — at the
+  # default that is a fifth of a second, which nobody can see. A grant or a
+  # revoke skips the wait entirely and clears the player straight away.
+  #
+  # Lower means fresher and more work; higher means less work and a slightly
+  # later tablist. Clamped to 50-5000.
+  ttl-ms: 200

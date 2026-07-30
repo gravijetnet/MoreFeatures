@@ -17,3 +17,20 @@ sync:
   # How often to run a drift-correction sync of network stats.
   # 6000 ticks = 5 minutes. Minimum recommended: 1200 (1 minute).
   interval-ticks: 6000
+
+  # How often to look for work the website has queued — bans, rank edits,
+  # announcements. All three queues share one connection and one trip, so this
+  # can be fast: 10 ticks = twice a second, which is how long a moderator waits
+  # between clicking Ban and seeing it land. 20 ticks (1s) is the old rate.
+  queue-poll-ticks: 10
+
+  # How often this server publishes its own row — online count, player list,
+  # TPS, memory, uptime — for the website's network page.
+  # 20 ticks = once a second. One small indexed upsert; a write is skipped
+  # rather than queued if the previous one has not finished.
+  status-interval-ticks: 20
+
+  # How often everyone's playtime is written, as a single batched update.
+  # 1200 ticks = 1 minute. This used to be one timer and one round trip per
+  # player every 5 minutes; batched, once a minute costs less than that did.
+  playtime-interval-ticks: 1200

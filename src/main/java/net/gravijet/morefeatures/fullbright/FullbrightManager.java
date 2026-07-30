@@ -191,12 +191,35 @@ public class FullbrightManager {
         net.minecraft.server.v1_8_R3.Chunk nmsChunk = ((CraftChunk) chunk).getHandle();
         for (ChunkSection section : nmsChunk.getSections()) {
             if (section != null) {
-                // BUG-24: .clone() is required — NibbleArray may store the reference
-                // directly; without it, NMS could mutate MAX_LIGHT through the NibbleArray.
-                section.b(new NibbleArray(MAX_LIGHT.clone())); // sky-light
-                section.a(new NibbleArray(MAX_LIGHT.clone())); // block-light
+                maxLight(section, true);   // sky-light
+                maxLight(section, false);  // block-light
             }
         }
+    }
+
+    /**
+     * Saturates one section's light, in place where possible.
+     *
+     * This runs for every section of every chunk as it loads. Replacing both
+     * NibbleArrays outright meant two fresh 2 KB arrays per section — up to 64 KB
+     * of garbage per chunk, for a player who is only walking. The section almost
+     * always has arrays already, and filling those costs one memset and nothing
+     * else, so an allocation is only made in the case that genuinely needs one:
+     * a section with no sky-light array at all, which is what the Nether and the
+     * End give you.
+     */
+    private static void maxLight(ChunkSection section, boolean sky) {
+        NibbleArray existing = sky ? section.getSkyLightArray() : section.getEmittedLightArray();
+        if (existing != null) {
+            // a() hands back the backing array itself, not a copy.
+            Arrays.fill(existing.a(), (byte) 0xFF);
+            return;
+        }
+        // BUG-24: .clone() is required — NibbleArray stores the reference directly;
+        // without it, NMS could mutate MAX_LIGHT through the NibbleArray.
+        NibbleArray created = new NibbleArray(MAX_LIGHT.clone());
+        if (sky) section.b(created);
+        else section.a(created);
     }
 
     private static void revertLight(Chunk chunk) {

@@ -10,6 +10,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import net.gravijet.morefeatures.action.ActionQueue;
 import net.gravijet.morefeatures.action.Broadcaster;
 import net.gravijet.morefeatures.action.ConfigActionQueue;
+import net.gravijet.morefeatures.action.QueuePoller;
 import net.gravijet.morefeatures.action.ServerPublisher;
 import net.gravijet.morefeatures.config.BridgeConfig;
 import net.gravijet.morefeatures.database.DatabaseManager;
@@ -41,8 +42,9 @@ import xyz.refinedev.phoenix.profile.punishment.PunishmentType;
 
 import java.io.File;
 import java.sql.SQLException;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -75,7 +77,16 @@ public class Main extends JavaPlugin {
     private Broadcaster broadcaster;
     private ServerPublisher serverPublisher;
 
-    private final Map<UUID, Integer> playtimeTasks = new ConcurrentHashMap<>();
+    /**
+     * Who is on this server, for the batched playtime write.
+     *
+     * This used to be a map of UUID to scheduler task id, because playtime was
+     * written by a repeating task per player. One task and one batched UPDATE
+     * covers all of them, so all that is needed now is the set — maintained from
+     * join and quit, which are main-thread events, rather than read off
+     * Bukkit.getOnlinePlayers() from the pool thread that does the writing.
+     */
+    private final Set<UUID> tracked = ConcurrentHashMap.newKeySet();
 
     // -------------------------------------------------------------------------
 
@@ -126,13 +137,20 @@ public class Main extends JavaPlugin {
         syncTask.runTaskTimerAsynchronously(this, 100L, syncInterval);
 
         for (Player player : getServer().getOnlinePlayers()) {
-            startPlaytimeTimer(player.getUniqueId());
+            trackPlaytime(player.getUniqueId());
         }
+
+        // Everyone's playtime, batched into one statement. See PlaytimeSync.
+        long playtimeInterval = bridgeConfig.getPlaytimeIntervalTicks();
+        getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
+            if (playtimeSync != null) playtimeSync.syncAll(tracked);
+        }, playtimeInterval, playtimeInterval);
 
         getServer().getScheduler().runTaskAsynchronously(this, this::initPunishmentCounts);
 
-        getLogger().info("Phoenix→MySQL sync enabled — network stats synced every "
-                + (syncInterval / 20) + " seconds.");
+        getLogger().info("Phoenix→MySQL sync enabled — network stats every "
+                + (syncInterval / 20) + "s, playtime every " + (playtimeInterval / 20)
+                + "s, queues polled every " + bridgeConfig.getQueuePollTicks() + " ticks.");
 
     }
 
@@ -153,11 +171,24 @@ public class Main extends JavaPlugin {
         if (syncTask != null) {
             syncTask.cancel();
         }
-        // BUG-03 fix: cancel each timer explicitly before clearing the map so no
-        // in-flight task can slip a DB write past the pool shutdown.
-        playtimeTasks.forEach((uuid, taskId) -> getServer().getScheduler().cancelTask(taskId));
-        playtimeTasks.clear();
         getServer().getScheduler().cancelTasks(this);
+
+        // One last batch on the way out. CraftBukkit disables plugins before it
+        // disconnects anybody, so no quit event ever fires for the players who
+        // were on at shutdown — without this every restart quietly threw away
+        // however long everyone had been playing since the last batch. It is a
+        // single statement and it has to run before the pool closes, so it runs
+        // here, inline, rather than being handed to a scheduler that has already
+        // stopped taking work.
+        if (playtimeSync != null && !tracked.isEmpty()) {
+            try {
+                playtimeSync.syncAll(tracked);
+            } catch (Exception e) {
+                getLogger().log(Level.WARNING, "Final playtime flush failed: " + e.getMessage());
+            }
+        }
+        tracked.clear();
+
         if (databaseManager != null) {
             databaseManager.close();
         }
@@ -233,12 +264,7 @@ public class Main extends JavaPlugin {
             // of onEnable is a bad night.
             getLogger().log(Level.SEVERE, "Could not create mod_actions — the website cannot punish anyone.", e);
             actionQueue = null;
-            return;
         }
-        // Every second. It is one indexed lookup against a table that is empty
-        // almost always, and the alternative is a moderator clicking Ban and
-        // watching nothing happen for half a minute.
-        getServer().getScheduler().runTaskTimerAsynchronously(this, () -> actionQueue.poll(), 100L, 20L);
 
         // The config queue is the same story for edits to ranks and ladders.
         // Separate table, separate failure: a broken rank editor must not stop
@@ -249,9 +275,7 @@ public class Main extends JavaPlugin {
         } catch (SQLException | RuntimeException e) {
             getLogger().log(Level.SEVERE, "Could not create config_actions — the network editor is unavailable.", e);
             configQueue = null;
-            return;
         }
-        getServer().getScheduler().runTaskTimerAsynchronously(this, () -> configQueue.poll(), 120L, 20L);
 
         // Announcements the website sends to the game. Fan-out, not a claim queue:
         // every server shows each one once. Its own createTables so a failure here
@@ -263,17 +287,30 @@ public class Main extends JavaPlugin {
         } catch (SQLException | RuntimeException e) {
             getLogger().log(Level.SEVERE, "Could not create network_broadcasts — announcements are unavailable.", e);
             broadcaster = null;
-            return;
         }
-        getServer().getScheduler().runTaskTimerAsynchronously(this, () -> broadcaster.poll(), 140L, 20L);
+
+        // One timer for all three rather than three staggered ones, sharing a
+        // single connection per cycle. See QueuePoller — this is both cheaper
+        // than the old shape and twice as quick to notice a queued ban.
+        //
+        // Note the guards above no longer return: one queue failing to create its
+        // table used to abandon everything set up after it, including the status
+        // publisher, so a single broken table took the website's network page
+        // down with it. Now each one is simply absent and the rest run.
+        QueuePoller poller = new QueuePoller(this, databaseManager, actionQueue, configQueue, broadcaster);
+        if (poller.hasWork()) {
+            long pollTicks = bridgeConfig.getQueuePollTicks();
+            getServer().getScheduler().runTaskTimerAsynchronously(this, poller, 100L, pollTicks);
+        }
 
         // Moving a player between servers is the proxy's job, and it will only be
         // asked over its own channel — without this a Connect goes nowhere.
         getServer().getMessenger().registerOutgoingPluginChannel(this, Broadcaster.BUNGEE_CHANNEL);
 
-        // What this server looks like, published for the website every ten
-        // seconds. Runs on the server thread: it reads the player list.
-        serverPublisher = new ServerPublisher(this, databaseManager, phoenixServerName());
+        // What this server looks like, published for the website. Runs on the
+        // server thread: it reads the player list.
+        serverPublisher = new ServerPublisher(this, databaseManager,
+                phoenixServerName(), phoenixServerGroup());
         try {
             serverPublisher.createTables();
         } catch (SQLException | RuntimeException e) {
@@ -281,10 +318,31 @@ public class Main extends JavaPlugin {
             serverPublisher = null;
             return;
         }
-        getServer().getScheduler().runTaskTimer(this, () -> serverPublisher.tick(), 200L, 200L);
+        long statusTicks = bridgeConfig.getStatusIntervalTicks();
+        getServer().getScheduler().runTaskTimer(this, () -> serverPublisher.tick(), 200L, statusTicks);
         // Once a second on the server thread: the sample *is* the measurement, so
         // it has to run where the ticks are.
         getServer().getScheduler().runTaskTimer(this, () -> serverPublisher.sampleTps(), 20L, 20L);
+    }
+
+    // -------------------------------------------------------------------------
+    //  The core's own global.yml
+    // -------------------------------------------------------------------------
+    //
+    // Read once and held. It was being loaded and parsed from disk three times
+    // in a row during startup for the same two strings, and it never changes
+    // while the server is up.
+
+    private FileConfiguration phoenixGlobal;
+    private boolean phoenixGlobalLoaded = false;
+
+    private FileConfiguration phoenixGlobal() {
+        if (!phoenixGlobalLoaded) {
+            phoenixGlobalLoaded = true;
+            File global = new File(getDataFolder().getParentFile(), "Phoenix/global.yml");
+            if (global.isFile()) phoenixGlobal = YamlConfiguration.loadConfiguration(global);
+        }
+        return phoenixGlobal;
     }
 
     /**
@@ -297,12 +355,34 @@ public class Main extends JavaPlugin {
      * actually run on, whatever the 1.8.8 we compile against still offers.
      */
     private String phoenixServerName() {
-        File global = new File(getDataFolder().getParentFile(), "Phoenix/global.yml");
-        if (global.isFile()) {
-            String name = YamlConfiguration.loadConfiguration(global).getString("server.name");
+        FileConfiguration global = phoenixGlobal();
+        if (global != null) {
+            String name = global.getString("server.name");
             if (name != null && !name.isEmpty()) return name;
         }
         return "unknown";
+    }
+
+    /**
+     * Which group of servers this one belongs to — "bedwars", "lobby".
+     *
+     * The core's API can answer this, but only on a Phoenix new enough to have
+     * INetworkHandler#getServerGroup(); on an older one the call raises
+     * NoSuchMethodError, which is what {@link ServerPublisher} was falling over.
+     * The same answer is in the core's config either way, so it is read here and
+     * used whenever the API cannot be asked.
+     *
+     * @return the configured group, or null if the core does not name one.
+     */
+    private String phoenixServerGroup() {
+        FileConfiguration global = phoenixGlobal();
+        if (global == null) return null;
+        // Both spellings appear across Phoenix versions; neither is wrong to try.
+        for (String key : new String[]{"server.group", "server.server-group", "server.groupName"}) {
+            String group = global.getString(key);
+            if (group != null && !group.isEmpty()) return group;
+        }
+        return null;
     }
 
     private void initFullbright() {
@@ -398,6 +478,17 @@ public class Main extends JavaPlugin {
                     new ChatListener(displayResolver, displayConfig, getLogger()), this);
         }
 
+        // The resolver keys its snapshots by UUID and nothing tells it when
+        // somebody leaves. Once every ten seconds is far more often than needed
+        // to keep a map of at-most-the-player-count entries from drifting.
+        getServer().getScheduler().runTaskTimer(this, () -> {
+            Set<UUID> online = new HashSet<>();
+            for (Player player : getServer().getOnlinePlayers()) {
+                online.add(player.getUniqueId());
+            }
+            displayResolver.sweep(online);
+        }, 200L, 200L);
+
         getLogger().info("Display initialised — %morefeatures_*% published to PlaceholderAPI"
                 + (displayConfig.isChatEnabled() ? ", lobby chat format active." : "."));
     }
@@ -432,28 +523,18 @@ public class Main extends JavaPlugin {
     }
 
     // -------------------------------------------------------------------------
-    //  Per-player playtime timer
+    //  Playtime tracking
     // -------------------------------------------------------------------------
 
-    public void startPlaytimeTimer(UUID uuid) {
+    /** Include this player in the batched playtime write. */
+    public void trackPlaytime(UUID uuid) {
         if (databaseManager == null) return;
-        // Atomically cancel any existing timer and schedule a new one so concurrent
-        // calls for the same UUID cannot leak a duplicate timer.
-        playtimeTasks.compute(uuid, (id, existingTaskId) -> {
-            if (existingTaskId != null) {
-                getServer().getScheduler().cancelTask(existingTaskId);
-            }
-            return getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
-                if (playtimeSync != null) playtimeSync.syncPlaytime(uuid);
-            }, 6000L, 6000L).getTaskId();
-        });
+        tracked.add(uuid);
     }
 
-    public void cancelPlaytimeTimer(UUID uuid) {
-        Integer taskId = playtimeTasks.remove(uuid);
-        if (taskId != null) {
-            getServer().getScheduler().cancelTask(taskId);
-        }
+    /** Stop including them — they left, and their final sync is done separately. */
+    public void untrackPlaytime(UUID uuid) {
+        tracked.remove(uuid);
     }
 
     // -------------------------------------------------------------------------

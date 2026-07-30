@@ -20,7 +20,9 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.logging.Level;
 
@@ -142,10 +144,10 @@ public class ActionQueue {
     }
 
     /**
-     * Called on a timer, off the main thread. Claims what it can and hands each
-     * job to the server thread to run.
+     * Called on a timer, off the main thread, on a connection shared with the
+     * other queues. Claims what it can and hands each job to the server thread.
      */
-    public void poll() {
+    public void poll(Connection conn) throws SQLException {
         if (database == null) return;
         Phoenix phoenix = Phoenix.getInstance();
         // Nothing is claimed while the core is down. Claiming a job we cannot
@@ -153,20 +155,19 @@ public class ActionQueue {
         // no other server would ever pick it up.
         if (phoenix == null || !phoenix.isApiEnabled()) return;
 
-        List<Job> claimed = new ArrayList<>();
-        try (Connection conn = database.getConnection()) {
-            for (Job job : readPending(conn)) {
-                try (PreparedStatement ps = conn.prepareStatement(CLAIM)) {
-                    ps.setString(1, node);
-                    ps.setLong(2, job.id);
-                    // Exactly one server's UPDATE matches. Everybody else loses
-                    // the race here rather than double-banning somebody.
-                    if (ps.executeUpdate() == 1) claimed.add(job);
-                }
+        List<Job> pending = readPending(conn);
+        if (pending.isEmpty()) return;
+
+        // One prepared statement for the whole batch rather than one per job.
+        List<Job> claimed = new ArrayList<>(pending.size());
+        try (PreparedStatement ps = conn.prepareStatement(CLAIM)) {
+            for (Job job : pending) {
+                ps.setString(1, node);
+                ps.setLong(2, job.id);
+                // Exactly one server's UPDATE matches. Everybody else loses the
+                // race here rather than double-banning somebody.
+                if (ps.executeUpdate() == 1) claimed.add(job);
             }
-        } catch (SQLException e) {
-            plugin.getLogger().log(Level.WARNING, "Could not read the action queue: " + e.getMessage());
-            return;
         }
 
         // Phoenix's handlers touch online players and the core's own caches, so
@@ -179,6 +180,12 @@ public class ActionQueue {
 
     private List<Job> readPending(Connection conn) throws SQLException {
         List<Job> out = new ArrayList<>();
+        // Rows whose target_uuid cannot be parsed, id mapped to the bad value.
+        // Failed after the result set is closed rather than during it: finish()
+        // runs on this same connection now, and issuing a statement on it while
+        // the cursor is still open is asking for trouble.
+        Map<Long, String> unparseable = null;
+
         try (PreparedStatement ps = conn.prepareStatement(SELECT_PENDING)) {
             ps.setString(1, node);
             try (ResultSet rs = ps.executeQuery()) {
@@ -197,14 +204,27 @@ public class ActionQueue {
                     try {
                         j.target = UUID.fromString(target);
                     } catch (IllegalArgumentException e) {
-                        // Can never succeed, so it is failed now rather than
-                        // claimed and retried until somebody notices.
-                        finish(j.id, "failed", "target_uuid is not a UUID: " + target);
+                        // Can never succeed, so it is failed rather than claimed
+                        // and retried until somebody notices.
+                        if (unparseable == null) unparseable = new LinkedHashMap<>();
+                        unparseable.put(j.id, target);
                         continue;
                     }
                     String actor = rs.getString("actor_uuid");
                     j.actor = actor == null ? CONSOLE : parseOr(actor, CONSOLE);
                     out.add(j);
+                }
+            }
+        }
+
+        if (unparseable != null) {
+            for (Map.Entry<Long, String> bad : unparseable.entrySet()) {
+                // A row nobody can act on must not stop the rest of the batch.
+                try {
+                    finish(conn, bad.getKey(), "failed", "target_uuid is not a UUID: " + bad.getValue());
+                } catch (SQLException e) {
+                    plugin.getLogger().log(Level.WARNING,
+                            "Could not fail malformed action #" + bad.getKey() + ": " + e.getMessage());
                 }
             }
         }
@@ -469,14 +489,19 @@ public class ActionQueue {
     }
 
     private void finish(long id, String status, String result) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(FINISH)) {
+        try (Connection conn = database.getConnection()) {
+            finish(conn, id, status, result);
+        } catch (SQLException e) {
+            plugin.getLogger().log(Level.WARNING, "Could not close out action #" + id + ": " + e.getMessage());
+        }
+    }
+
+    private void finish(Connection conn, long id, String status, String result) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(FINISH)) {
             ps.setString(1, status);
             ps.setString(2, result == null ? null : result.substring(0, Math.min(result.length(), 255)));
             ps.setLong(3, id);
             ps.executeUpdate();
-        } catch (SQLException e) {
-            plugin.getLogger().log(Level.WARNING, "Could not close out action #" + id + ": " + e.getMessage());
         }
     }
 }

@@ -40,4 +40,24 @@ final class MBedwarsArenaLookup implements ArenaLookup {
         return BedwarsAPI.getGameAPI().getArenaByPlayer(player) != null
                 || BedwarsAPI.getGameAPI().getArenaBySpectator(player) != null;
     }
+
+    /**
+     * Both answers off one arena lookup.
+     *
+     * The two methods above each walk MBedwars' arenas to find the same player,
+     * so asking for slot and colour separately costs twice what it needs to —
+     * and {@link ArenaCache} asks for both, for everyone, twice a second.
+     */
+    @Override
+    public TeamState teamState(Player player) {
+        Arena arena = BedwarsAPI.getGameAPI().getArenaByPlayer(player);
+        if (arena == null) {
+            return BedwarsAPI.getGameAPI().getArenaBySpectator(player) != null
+                    ? new TeamState(SPECTATOR, "")
+                    : TeamState.OUTSIDE;
+        }
+        Team team = arena.getPlayerTeam(player);
+        if (team == null) return new TeamState(SPECTATOR, "");
+        return new TeamState(team.ordinal(), team.getBungeeChatColor().toString());
+    }
 }

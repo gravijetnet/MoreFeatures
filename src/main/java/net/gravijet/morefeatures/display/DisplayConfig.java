@@ -12,11 +12,19 @@ import java.io.File;
  */
 public class DisplayConfig {
 
+    /**
+     * Clamped so a mistyped value cannot either hammer Phoenix on every
+     * placeholder request or freeze the tablist for a minute.
+     */
+    private static final long MIN_CACHE_TTL_MS = 50L;
+    private static final long MAX_CACHE_TTL_MS = 5_000L;
+
     private final boolean higherPriorityFirst;
     private final String  prefixFallback;
     private final boolean chatEnabled;
     private final String  chatFormat;
     private final String  chatColorPermission;
+    private final long    cacheTtlMs;
 
     public DisplayConfig(JavaPlugin plugin) {
         File file = new File(plugin.getDataFolder(), "display.yml");
@@ -29,6 +37,8 @@ public class DisplayConfig {
         this.prefixFallback      = cfg.getString("prefix.fallback", "&7");
         this.chatEnabled         = cfg.getBoolean("chat.enabled", true);
         this.chatColorPermission = cfg.getString("chat.color-permission", "morefeatures.chat.color");
+        this.cacheTtlMs          = Math.max(MIN_CACHE_TTL_MS,
+                Math.min(MAX_CACHE_TTL_MS, cfg.getLong("cache.ttl-ms", 200L)));
 
         String format = cfg.getString("chat.format",
                 "<prefix>%pxcosmetics_player_color%%phoenix_player_name%<suffix>"
@@ -71,5 +81,17 @@ public class DisplayConfig {
     /** Permission that lets a player use &-colour codes in their own messages. */
     public String getChatColorPermission() {
         return chatColorPermission;
+    }
+
+    /**
+     * How long a resolved player stays valid before Phoenix is asked again.
+     *
+     * TAB refreshes nine placeholders per player per viewer, so this is the
+     * difference between one Phoenix lookup per player per fifth of a second
+     * and several hundred per second on a full server. A rank change still
+     * appears within this window, which at the default is not perceptible.
+     */
+    public long getCacheTtlMs() {
+        return cacheTtlMs;
     }
 }

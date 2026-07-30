@@ -22,6 +22,9 @@ public class BridgeConfig {
     private final String password;
     private final int poolSize;
     private final long syncIntervalTicks;
+    private final long queuePollTicks;
+    private final long statusIntervalTicks;
+    private final long playtimeIntervalTicks;
     private final boolean useSSL;
 
     public BridgeConfig(FileConfiguration cfg) {
@@ -64,6 +67,14 @@ public class BridgeConfig {
         }
         this.poolSize          = rawPoolSize;
         this.syncIntervalTicks = cfg.getLong("sync.interval-ticks", 6000L);
+
+        // All three are floored rather than rejected: a zero or negative interval
+        // in a config file is a typo, and the honest response to a typo is to run
+        // as fast as is sane, not to refuse to start the bridge.
+        this.queuePollTicks        = Math.max(1L,  cfg.getLong("sync.queue-poll-ticks", 10L));
+        this.statusIntervalTicks   = Math.max(5L,  cfg.getLong("sync.status-interval-ticks", 20L));
+        this.playtimeIntervalTicks = Math.max(200L, cfg.getLong("sync.playtime-interval-ticks", 1200L));
+
         this.useSSL            = cfg.getBoolean("database.use-ssl", false);
 
         // BUG-23 fix: warn operators when SSL is disabled so they are aware of the risk.
